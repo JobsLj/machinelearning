@@ -193,7 +193,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 
         protected int AppendComments(StringBuilder sb, string trainingParams)
         {
-            sb.AppendFormat("\n\n[Comments]\nC:0=Regression Tree Ensemble\nC:1=Generated using FastTree\nC:2=Created on {0}\n", DateTime.Now);
+            sb.AppendFormat("\n\n[Comments]\nC:0=Regression Tree Ensemble\nC:1=Generated using FastTree\nC:2=Created on {0}\n", DateTime.UtcNow);
 
             string[] trainingParamsList = trainingParams.Split(new char[] { '\n' });
             int i = 0;
@@ -336,7 +336,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 
         /// <summary>
         /// Returns a vector of feature contributions for a given example.
-        /// <paramref name="builder"/> is used as a buffer to accumulate the contributions across trees. 
+        /// <paramref name="builder"/> is used as a buffer to accumulate the contributions across trees.
         /// If <paramref name="builder"/> is null, it will be created, otherwise it will be reused.
         /// </summary>
         internal void GetFeatureContributions(ref VBuffer<float> features, ref VBuffer<float> contribs, ref BufferBuilder<float> builder)

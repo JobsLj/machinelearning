@@ -5,6 +5,8 @@
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.Api;
 using Microsoft.ML.Runtime.Data;
+using System.Collections.Generic;
+using static Microsoft.ML.Runtime.Data.MetricKinds;
 
 namespace Microsoft.ML.Models
 {
@@ -17,36 +19,46 @@ namespace Microsoft.ML.Models
         {
         }
 
-        internal static ClassificationMetrics FromMetrics(IHostEnvironment env, IDataView overallMetrics, IDataView confusionMatrix)
+        internal static List<ClassificationMetrics> FromMetrics(IHostEnvironment env, IDataView overallMetrics, IDataView confusionMatrix,
+            int confusionMatriceStartIndex = 0)
         {
             Contracts.AssertValue(env);
             env.AssertValue(overallMetrics);
             env.AssertValue(confusionMatrix);
 
             var metricsEnumerable = overallMetrics.AsEnumerable<SerializationClass>(env, true, ignoreMissingColumns: true);
-            var enumerator = metricsEnumerable.GetEnumerator();
-            if (!enumerator.MoveNext())
+            if (!metricsEnumerable.GetEnumerator().MoveNext())
             {
                 throw env.Except("The overall RegressionMetrics didn't have any rows.");
             }
 
-            SerializationClass metrics = enumerator.Current;
+            List<ClassificationMetrics> metrics = new List<ClassificationMetrics>();
+            var confusionMatrices = ConfusionMatrix.Create(env, confusionMatrix).GetEnumerator();
 
-            if (enumerator.MoveNext())
+            int index = 0;
+            foreach (var metric in metricsEnumerable)
             {
-                throw env.Except("The overall RegressionMetrics contained more than 1 row.");
+                if (index++ >= confusionMatriceStartIndex && !confusionMatrices.MoveNext())
+                {
+                    throw env.Except("Confusion matrices didn't have enough matrices.");
+                }
+
+                metrics.Add(
+                    new ClassificationMetrics()
+                    {
+                        AccuracyMicro = metric.AccuracyMicro,
+                        AccuracyMacro = metric.AccuracyMacro,
+                        LogLoss = metric.LogLoss,
+                        LogLossReduction = metric.LogLossReduction,
+                        TopKAccuracy = metric.TopKAccuracy,
+                        PerClassLogLoss = metric.PerClassLogLoss,
+                        ConfusionMatrix = confusionMatrices.Current,
+                        RowTag = metric.RowTag,
+                    });
+
             }
 
-            return new ClassificationMetrics()
-            {
-                AccuracyMicro = metrics.AccuracyMicro,
-                AccuracyMacro = metrics.AccuracyMacro,
-                LogLoss = metrics.LogLoss,
-                LogLossReduction = metrics.LogLossReduction,
-                TopKAccuracy = metrics.TopKAccuracy,
-                PerClassLogLoss = metrics.PerClassLogLoss,
-                ConfusionMatrix = ConfusionMatrix.Create(env, confusionMatrix)
-            };
+            return metrics;
         }
 
         /// <summary>
@@ -54,7 +66,7 @@ namespace Microsoft.ML.Models
         /// </summary>
         /// <remarks>
         /// The micro-average is the fraction of instances predicted correctly.
-        /// 
+        ///
         /// The micro-average metric weighs each class according to the number of instances that belong
         /// to it in the dataset.
         /// </remarks>
@@ -67,7 +79,7 @@ namespace Microsoft.ML.Models
         /// The macro-average is computed by taking the average over all the classes of the fraction
         /// of correct predictions in this class (the number of correctly predicted instances in the class,
         /// divided by the total number of instances in the class).
-        /// 
+        ///
         /// The macro-average metric gives the same weight to each class, no matter how many instances from
         /// that class the dataset contains.
         /// </remarks>
@@ -118,6 +130,12 @@ namespace Microsoft.ML.Models
         public double[] PerClassLogLoss { get; private set; }
 
         /// <summary>
+        /// For cross-validation, this is equal to "Fold N" for per-fold metric rows, "Overall" for the average metrics and "STD" for standard deviation.
+        /// For non-CV scenarios, this is equal to null
+        /// </summary>
+        public string RowTag { get; private set; }
+
+        /// <summary>
         /// Gets the confusion matrix, or error matrix, of the classifier.
         /// </summary>
         public ConfusionMatrix ConfusionMatrix { get; private set; }
@@ -125,7 +143,7 @@ namespace Microsoft.ML.Models
         /// <summary>
         /// This class contains the public fields necessary to deserialize from IDataView.
         /// </summary>
-        private class SerializationClass
+        private sealed class SerializationClass
         {
 #pragma warning disable 649 // never assigned
             [ColumnName(MultiClassClassifierEvaluator.AccuracyMicro)]
@@ -145,6 +163,9 @@ namespace Microsoft.ML.Models
 
             [ColumnName(MultiClassClassifierEvaluator.PerClassLogLoss)]
             public double[] PerClassLogLoss;
+
+            [ColumnName(ColumnNames.FoldIndex)]
+            public string RowTag;
 #pragma warning restore 649 // never assigned
         }
     }

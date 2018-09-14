@@ -34,7 +34,7 @@ namespace Microsoft.ML.Runtime.Data
 {
     /// <summary>
     /// A bindable mapper wrapper for tree ensembles, that creates a bound mapper with three outputs:
-    /// 1. A vector containing the individual tree outputs of the tree ensemble. 
+    /// 1. A vector containing the individual tree outputs of the tree ensemble.
     /// 2. An indicator vector for the leaves that the feature vector falls on in the tree ensemble.
     /// 3. An indicator vector for the internal nodes on the paths that the feature vector falls on in the tree ensemble.
     /// </summary>
@@ -192,15 +192,15 @@ namespace Microsoft.ML.Runtime.Data
 
                 // A vector containing the output of each tree on a given example.
                 var treeValueType = new VectorType(NumberType.Float, _owner._ensemble.NumTrees);
-                // An indicator vector with length = the total number of leaves in the ensemble, indicating which leaf the example 
+                // An indicator vector with length = the total number of leaves in the ensemble, indicating which leaf the example
                 // ends up in all the trees in the ensemble.
                 var leafIdType = new VectorType(NumberType.Float, _owner._totalLeafCount);
-                // An indicator vector with length = the total number of nodes in the ensemble, indicating the nodes on 
+                // An indicator vector with length = the total number of nodes in the ensemble, indicating the nodes on
                 // the paths of the example in all the trees in the ensemble.
                 // The total number of nodes in a binary tree is equal to the number of internal nodes + the number of leaf nodes,
                 // and it is also equal to the number of children of internal nodes (which is 2 * the number of internal nodes)
-                // plus one (since the root node is not a child of any node). So we have #internal + #leaf = 2*(#internal) + 1, 
-                // which means that #internal = #leaf - 1. 
+                // plus one (since the root node is not a child of any node). So we have #internal + #leaf = 2*(#internal) + 1,
+                // which means that #internal = #leaf - 1.
                 // Therefore, the number of internal nodes in the ensemble is #leaf - #trees.
                 var pathIdType = new VectorType(NumberType.Float, _owner._totalLeafCount - _owner._ensemble.NumTrees);
                 _outputSchema = new Schema(ectx, owner, treeValueType, leafIdType, pathIdType);
@@ -393,8 +393,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetInputColumnRoles()
             {
-                yield return new KeyValuePair<RoleMappedSchema.ColumnRole, string>(
-                    RoleMappedSchema.ColumnRole.Feature, _inputSchema.Feature.Name);
+                yield return RoleMappedSchema.ColumnRole.Feature.Bind(_inputSchema.Feature.Name);
             }
 
             public Func<int, bool> GetDependencies(Func<int, bool> predicate)
@@ -545,10 +544,14 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
+    /// <include file='doc.xml' path='doc/members/member[@name="TreeEnsembleFeaturizerTransform"]'/>
     public static class TreeEnsembleFeaturizerTransform
     {
-        public sealed class Arguments : TrainAndScoreTransform.ArgumentsBase<SignatureTreeEnsembleTrainer>
+        public sealed class Arguments : TrainAndScoreTransform.ArgumentsBase
         {
+            [Argument(ArgumentType.Multiple, HelpText = "Trainer to use", ShortName = "tr", NullName = "<None>", SortOrder = 1, SignatureType = typeof(SignatureTreeEnsembleTrainer))]
+            public IComponentFactory<ITrainer> Trainer;
+
             [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "Predictor model file used in scoring",
                 ShortName = "in", SortOrder = 2)]
             public string TrainedModelFile;
@@ -563,8 +566,8 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         /// <summary>
-        /// REVIEW: Ideally we should have only one arguments class by using IComponentFactory for the model. 
-        /// For now it probably warrants a REVIEW comment here in case we'd like to merge these two arguments in the future. 
+        /// REVIEW: Ideally we should have only one arguments class by using IComponentFactory for the model.
+        /// For now it probably warrants a REVIEW comment here in case we'd like to merge these two arguments in the future.
         /// Also, it might be worthwhile to extract the common arguments to a base class.
         /// </summary>
         [TlcModule.EntryPointKind(typeof(CommonInputs.IFeaturizerInput))]
@@ -621,7 +624,7 @@ namespace Microsoft.ML.Runtime.Data
 
             host.CheckValue(args, nameof(args));
             host.CheckValue(input, nameof(input));
-            host.CheckUserArg(!string.IsNullOrWhiteSpace(args.TrainedModelFile) || args.Trainer.IsGood(), nameof(args.TrainedModelFile),
+            host.CheckUserArg(!string.IsNullOrWhiteSpace(args.TrainedModelFile) || args.Trainer != null, nameof(args.TrainedModelFile),
                 "Please specify either a trainer or an input model file.");
             host.CheckUserArg(!string.IsNullOrEmpty(args.FeatureColumn), nameof(args.FeatureColumn), "Transform needs an input features column");
 
@@ -631,7 +634,7 @@ namespace Microsoft.ML.Runtime.Data
                 var scorerArgs = new TreeEnsembleFeaturizerBindableMapper.Arguments() { Suffix = args.Suffix };
                 if (!string.IsNullOrWhiteSpace(args.TrainedModelFile))
                 {
-                    if (args.Trainer.IsGood())
+                    if (args.Trainer != null)
                         ch.Warning("Both an input model and a trainer were specified. Using the model file.");
 
                     ch.Trace("Loading model");
@@ -663,23 +666,23 @@ namespace Microsoft.ML.Runtime.Data
                 }
                 else
                 {
-                    ch.Assert(args.Trainer.IsGood());
+                    ch.AssertValue(args.Trainer);
 
                     ch.Trace("Creating TrainAndScoreTransform");
-                    string scorerSettings = CmdParser.GetSettings(ch, scorerArgs,
-                        new TreeEnsembleFeaturizerBindableMapper.Arguments());
-                    var scorer =
-                        new SubComponent<IDataScorerTransform, SignatureDataScorer>(
-                            TreeEnsembleFeaturizerBindableMapper.LoadNameShort, scorerSettings);
 
                     var trainScoreArgs = new TrainAndScoreTransform.Arguments();
                     args.CopyTo(trainScoreArgs);
-                    trainScoreArgs.Trainer = new SubComponent<ITrainer, SignatureTrainer>(args.Trainer.Kind,
-                        args.Trainer.Settings);
+                    trainScoreArgs.Trainer = args.Trainer;
+
+                    trainScoreArgs.Scorer = ComponentFactoryUtils.CreateFromFunction<IDataView, ISchemaBoundMapper, RoleMappedSchema, IDataScorerTransform>(
+                        (e, data, mapper, trainSchema) => Create(e, scorerArgs, data, mapper, trainSchema));
+
+                    var mapperFactory = ComponentFactoryUtils.CreateFromFunction<IPredictor, ISchemaBindableMapper>(
+                            (e, predictor) => new TreeEnsembleFeaturizerBindableMapper(e, scorerArgs, predictor));
 
                     var labelInput = AppendLabelTransform(host, ch, input, trainScoreArgs.LabelColumn, args.LabelPermutationSeed);
-                    trainScoreArgs.Scorer = scorer;
-                    var scoreXf = TrainAndScoreTransform.Create(host, trainScoreArgs, labelInput);
+                    var scoreXf = TrainAndScoreTransform.Create(host, trainScoreArgs, labelInput, mapperFactory);
+
                     if (input == labelInput)
                         return scoreXf;
                     return (IDataTransform)ApplyTransformUtils.ApplyAllTransformsToData(host, scoreXf, input, labelInput);
@@ -703,10 +706,12 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = host.Start("Create Tree Ensemble Scorer"))
             {
                 var scorerArgs = new TreeEnsembleFeaturizerBindableMapper.Arguments() { Suffix = args.Suffix };
-                var predictor = args.PredictorModel?.Predictor;
+                var predictor = args.PredictorModel.Predictor;
                 ch.Trace("Prepare data");
                 RoleMappedData data = null;
-                args.PredictorModel?.PrepareData(env, input, out data, out var predictor2);
+                args.PredictorModel.PrepareData(env, input, out data, out var predictor2);
+                ch.AssertValue(data);
+                ch.Assert(predictor == predictor2);
 
                 // Make sure that the given predictor has the correct number of input features.
                 if (predictor is CalibratedPredictorBase)
@@ -715,16 +720,16 @@ namespace Microsoft.ML.Runtime.Data
                 // be non-null.
                 var vm = predictor as IValueMapper;
                 ch.CheckUserArg(vm != null, nameof(args.PredictorModel), "Predictor does not have compatible type");
-                if (data != null && vm?.InputType.VectorSize != data.Schema.Feature.Type.VectorSize)
+                if (data != null && vm.InputType.VectorSize != data.Schema.Feature.Type.VectorSize)
                 {
                     throw ch.ExceptUserArg(nameof(args.PredictorModel),
                         "Predictor expects {0} features, but data has {1} features",
-                        vm?.InputType.VectorSize, data.Schema.Feature.Type.VectorSize);
+                        vm.InputType.VectorSize, data.Schema.Feature.Type.VectorSize);
                 }
 
                 var bindable = new TreeEnsembleFeaturizerBindableMapper(env, scorerArgs, predictor);
-                var bound = bindable.Bind(env, data?.Schema);
-                xf = new GenericScorer(env, scorerArgs, input, bound, data?.Schema);
+                var bound = bindable.Bind(env, data.Schema);
+                xf = new GenericScorer(env, scorerArgs, data.Data, bound, data.Schema);
                 ch.Done();
             }
             return xf;
@@ -801,7 +806,11 @@ namespace Microsoft.ML.Runtime.Data
 
     public static partial class TreeFeaturize
     {
-        [TlcModule.EntryPoint(Name = "Transforms.TreeLeafFeaturizer", Desc = TreeEnsembleFeaturizerTransform.TreeEnsembleSummary, UserName = TreeEnsembleFeaturizerTransform.UserName, ShortName = TreeEnsembleFeaturizerBindableMapper.LoadNameShort)]
+        [TlcModule.EntryPoint(Name = "Transforms.TreeLeafFeaturizer",
+            Desc = TreeEnsembleFeaturizerTransform.TreeEnsembleSummary,
+            UserName = TreeEnsembleFeaturizerTransform.UserName,
+            ShortName = TreeEnsembleFeaturizerBindableMapper.LoadNameShort,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.FastTree/doc.xml' path='doc/members/member[@name=""TreeEnsembleFeaturizerTransform""]/*'/>" })]
         public static CommonOutputs.TransformOutput Featurizer(IHostEnvironment env, TreeEnsembleFeaturizerTransform.ArgumentsForEntryPoint input)
         {
             Contracts.CheckValue(env, nameof(env));

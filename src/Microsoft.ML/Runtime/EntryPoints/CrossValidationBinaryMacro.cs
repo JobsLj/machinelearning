@@ -48,12 +48,12 @@ namespace Microsoft.ML.Runtime.EntryPoints
             [Argument(ArgumentType.Required, HelpText = "The training subgraph", SortOrder = 3)]
             public JArray Nodes;
 
-            // This is the subgraph input, that shows that the subgraph should only require one 
+            // This is the subgraph input, that shows that the subgraph should only require one
             // IDataView as input and indicates the variable name (in the subgraph) for it.
             [Argument(ArgumentType.Required, HelpText = "The training subgraph inputs", SortOrder = 4)]
             public SubGraphInput Inputs = new SubGraphInput();
 
-            // This is the subgraph output, that shows that the subgraph should produce one 
+            // This is the subgraph output, that shows that the subgraph should produce one
             // IPredictorModel as output and indicates the variable name (in the subgraph) for it.
             [Argument(ArgumentType.Required, HelpText = "The training subgraph outputs", SortOrder = 5)]
             public SubGraphOutput Outputs = new SubGraphOutput();
@@ -224,12 +224,34 @@ namespace Microsoft.ML.Runtime.EntryPoints
             public IPredictorModel[] OutputModel;
         }
 
-        [TlcModule.EntryPoint(Desc = "Create and array variable", Name = "Data.PredictorModelArrayConverter")]
+        [TlcModule.EntryPoint(Desc = "Create an array variable of IPredictorModel", Name = "Data.PredictorModelArrayConverter")]
         public static ArrayIPredictorModelOutput MakeArray(IHostEnvironment env, ArrayIPredictorModelInput input)
         {
             var result = new ArrayIPredictorModelOutput
             {
                 OutputModel = input.Model
+            };
+            return result;
+        }
+
+        public sealed class ArrayITransformModelInput
+        {
+            [Argument(ArgumentType.Required, HelpText = "The models", SortOrder = 1)]
+            public ITransformModel[] TransformModel;
+        }
+
+        public sealed class ArrayITransformModelOutput
+        {
+            [TlcModule.Output(Desc = "The model array", SortOrder = 1)]
+            public ITransformModel[] OutputModel;
+        }
+
+        [TlcModule.EntryPoint(Desc = "Create an array variable of ITransformModel", Name = "Data.TransformModelArrayConverter")]
+        public static ArrayITransformModelOutput MakeArray(IHostEnvironment env, ArrayITransformModelInput input)
+        {
+            var result = new ArrayITransformModelOutput
+            {
+                OutputModel = input.TransformModel
             };
             return result;
         }
@@ -246,7 +268,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             public IDataView[] OutputData;
         }
 
-        [TlcModule.EntryPoint(Desc = "Create and array variable", Name = "Data.IDataViewArrayConverter")]
+        [TlcModule.EntryPoint(Desc = "Create an array variable of IDataView", Name = "Data.IDataViewArrayConverter")]
         public static ArrayIDataViewOutput MakeArray(IHostEnvironment env, ArrayIDataViewInput input)
         {
             var result = new ArrayIDataViewOutput

@@ -81,8 +81,10 @@ namespace Microsoft.ML.Runtime.Data
                 ShortName = "col", SortOrder = 1)]
             public Column[] Column;
 
-            [Argument(ArgumentType.Multiple, HelpText = "Tokenizer to use", ShortName = "tok")]
-            public SubComponent<ITokenizeTransform, SignatureTokenizeTransform> Tokenizer = new SubComponent<ITokenizeTransform, SignatureTokenizeTransform>("Token");
+            [Argument(ArgumentType.Multiple, HelpText = "Tokenizer to use", ShortName = "tok", SignatureType = typeof(SignatureTokenizeTransform))]
+            public IComponentFactory<IDataView, OneToOneColumn[], ITokenizeTransform> Tokenizer =
+                ComponentFactoryUtils.CreateFromFunction<IDataView, OneToOneColumn[], ITokenizeTransform>(
+                    (env, input, columns) => new DelimitedTokenizeTransform(env, new DelimitedTokenizeTransform.TokenizeArguments(), input, columns));
         }
         private const string RegistrationName = "WordHashBagTransform";
 
@@ -96,12 +98,12 @@ namespace Microsoft.ML.Runtime.Data
             h.CheckValue(args, nameof(args));
             h.CheckValue(input, nameof(input));
             h.CheckUserArg(Utils.Size(args.Column) > 0, nameof(args.Column), "Columns must be specified");
-            h.CheckUserArg(args.Tokenizer.IsGood(), nameof(args.Tokenizer), "tokenizer must be specified");
+            h.CheckUserArg(args.Tokenizer != null, nameof(args.Tokenizer), "tokenizer must be specified");
 
             // To each input column to the WordHashBagTransform, a tokenize transform is applied,
             // followed by applying WordHashVectorizeTransform.
-            // Since WordHashBagTransform is a many-to-one column transform, for each 
-            // WordHashBagTransform.Column we may need to define multiple tokenize transform columns. 
+            // Since WordHashBagTransform is a many-to-one column transform, for each
+            // WordHashBagTransform.Column we may need to define multiple tokenize transform columns.
             // NgramHashExtractorTransform may need to define an identical number of HashTransform.Columns.
             // The intermediate columns are dropped at the end of using a DropColumnsTransform.
             IDataView view = input;
@@ -146,7 +148,7 @@ namespace Microsoft.ML.Runtime.Data
                     };
             }
 
-            view = args.Tokenizer.CreateInstance(h, view, tokenizeColumns.ToArray());
+            view = args.Tokenizer.CreateComponent(h, view, tokenizeColumns.ToArray());
 
             var featurizeArgs =
                 new NgramHashExtractorTransform.Arguments
@@ -175,7 +177,7 @@ namespace Microsoft.ML.Runtime.Data
     }
 
     /// <summary>
-    /// A transform that turns a collection of tokenized text (vector of DvText) into numerical feature vectors 
+    /// A transform that turns a collection of tokenized text (vector of DvText) into numerical feature vectors
     /// using the hashing trick.
     /// </summary>
     public static class NgramHashExtractorTransform
@@ -264,7 +266,7 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         /// <summary>
-        /// This class is a merger of <see cref="HashTransform.Arguments"/> and 
+        /// This class is a merger of <see cref="HashTransform.Arguments"/> and
         /// <see cref="NgramHashTransform.Arguments"/>, with the ordered option,
         /// the rehashUnigrams option and the allLength option removed.
         /// </summary>
@@ -331,7 +333,7 @@ namespace Microsoft.ML.Runtime.Data
             h.CheckValue(input, nameof(input));
             h.CheckUserArg(Utils.Size(args.Column) > 0, nameof(args.Column), "Columns must be specified");
 
-            // To each input column to the NgramHashExtractorArguments, a HashTransform using 31 
+            // To each input column to the NgramHashExtractorArguments, a HashTransform using 31
             // bits (to minimize collisions) is applied first, followed by an NgramHashTransform.
             IDataView view = input;
 
@@ -417,7 +419,7 @@ namespace Microsoft.ML.Runtime.Data
                         Sort = termLoaderArgs.Sort,
                         Column = termCols.ToArray()
                     };
-                view = new TermTransform(h, termArgs, view);
+                view = TermTransform.Create(h, termArgs, view);
 
                 if (termLoaderArgs.DropUnknowns)
                 {

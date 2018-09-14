@@ -83,7 +83,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
                     label.ItemKind == DataKind.TX ||
                     data.Schema.GetColumnType(label.ColumnIndex).IsKey)
                 {
-                    if (columns.Any(col => col.Purpose == ColumnPurpose.GroupId))
+                    if (columns.Any(col => col.Purpose == ColumnPurpose.Group))
                         return typeof(SignatureRankerTrainer);
                     else
                         return typeof(SignatureMultiClassClassifierTrainer);
@@ -121,9 +121,9 @@ namespace Microsoft.ML.Runtime.PipelineInference
                 AllowQuoting = splitResult.AllowQuote,
                 HasHeader = typeInferenceResult.HasHeader
             };
-            var typedLoader = new TextLoader(env, typedLoaderArgs, sample);
+            var typedData = TextLoader.ReadFile(env, typedLoaderArgs, sample);
 
-            var purposeInferenceResult = PurposeInference.InferPurposes(env, typedLoader,
+            var purposeInferenceResult = PurposeInference.InferPurposes(env, typedData,
                 Utils.GetIdentityPermutation(typedLoaderArgs.Column.Length), new PurposeInference.Arguments());
             ch.Info("Detecting column grouping and generating column names");
 
@@ -177,7 +177,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
         CategoricalFeature = 4,
         TextFeature = 5,
         Weight = 6,
-        GroupId = 7,
+        Group = 7,
         ImagePath = 8
     }
 }

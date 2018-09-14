@@ -157,15 +157,15 @@ namespace Microsoft.ML.Runtime.PipelineInference
             public virtual List<Type> AllowedPredictorTypes() => MacroUtils.PredictorTypes.ToList();
 
             protected virtual TransformInference.SuggestedTransform[] GetSuggestedTransforms(
-                TransformInference.InferenceResult tranformInferenceResult, Type predictorType)
+                TransformInference.InferenceResult transformInferenceResult, Type predictorType)
             {
                 List<Type> allowedTransforms = AllowedTransforms();
                 List<Type> qualifierTransforms = QualifierTransforms();
 
                 if (AllowedPredictorTypes().Any(type => type == predictorType) &&
-                    tranformInferenceResult.SuggestedTransforms.Any(transform => qualifierTransforms.Contains(transform.ExpertType)))
+                    transformInferenceResult.SuggestedTransforms.Any(transform => qualifierTransforms.Contains(transform.ExpertType)))
                 {
-                    return tranformInferenceResult.SuggestedTransforms
+                    return transformInferenceResult.SuggestedTransforms
                         .Where(transform => allowedTransforms.Contains(transform.ExpertType) || qualifierTransforms.Contains(transform.ExpertType))
                         .ToArray();
                 }
@@ -174,10 +174,10 @@ namespace Microsoft.ML.Runtime.PipelineInference
             }
 
             public virtual IEnumerable<SuggestedRecipe> Apply(
-                TransformInference.InferenceResult tranformInferenceResult, Type predictorType, IChannel ch)
+                TransformInference.InferenceResult transformInferenceResult, Type predictorType, IChannel ch)
             {
                 TransformInference.SuggestedTransform[] transforms = GetSuggestedTransforms(
-                    tranformInferenceResult, predictorType);
+                    transformInferenceResult, predictorType);
 
                 if (transforms?.Length > 0)
                 {
@@ -407,8 +407,8 @@ namespace Microsoft.ML.Runtime.PipelineInference
                 ch.Info($"Loader options: {settingsString}");
 
                 ch.Info("Inferring recipes");
-                var finalLoader = new TextLoader(h, finalLoaderArgs, sample);
-                var cached = new CacheDataView(h, finalLoader,
+                var finalData = TextLoader.ReadFile(h, finalLoaderArgs, sample);
+                var cached = new CacheDataView(h, finalData,
                     Enumerable.Range(0, finalLoaderArgs.Column.Length).ToArray());
 
                 var purposeColumns = columns.Select((x, i) => new PurposeInference.Column(i, x.Purpose, x.ItemKind)).ToArray();
@@ -431,7 +431,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
             }
         }
 
-        public static InferenceResult InferRecipes(IHostEnvironment env, TransformInference.InferenceResult tranformInferenceResult,
+        public static InferenceResult InferRecipes(IHostEnvironment env, TransformInference.InferenceResult transformInferenceResult,
             Type predictorType)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -441,7 +441,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
             {
                 var list = new List<SuggestedRecipe>();
                 foreach (var recipe in GetRecipes())
-                    list.AddRange(recipe.Apply(tranformInferenceResult, predictorType, ch));
+                    list.AddRange(recipe.Apply(transformInferenceResult, predictorType, ch));
 
                 if (list.Count == 0)
                     ch.Info("No recipes are needed for the data.");
@@ -507,7 +507,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
             var type = typeof(CommonInputs.ITrainerInput);
             var trainerTypes = typeof(Experiment).Assembly.GetTypes()
                 .Where(p => type.IsAssignableFrom(p) &&
-                    p.Name.Equals(MacroUtils.GetTrainerName(trainerKind)));
+                    MacroUtils.IsTrainerOfKind(p, trainerKind));
 
             foreach (var tt in trainerTypes)
             {
@@ -516,7 +516,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
                 var sl = new SuggestedRecipe.SuggestedLearner
                 {
                     PipelineNode = new TrainerPipelineNode(epInputObj, sweepParams),
-                    LearnerName = tt.Namespace
+                    LearnerName = tt.Name
                 };
 
                 if (sl.PipelineNode != null && availableLearnersList.FirstOrDefault(l=> l.Name.Equals(sl.PipelineNode.GetEpName())) != null)

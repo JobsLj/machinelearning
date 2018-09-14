@@ -4,7 +4,7 @@
 
 using Float = System.Single;
 
-using System;
+using Microsoft.ML.Core.Data;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
@@ -25,14 +25,14 @@ using Microsoft.ML.Runtime.Internal.Internallearn;
 
 namespace Microsoft.ML.Runtime.Learners
 {
-    using TPredictor = LinearRegressionPredictor;
 
-    public sealed class OnlineGradientDescentTrainer : AveragedLinearTrainer<OnlineGradientDescentTrainer.Arguments, TPredictor>
+    /// <include file='doc.xml' path='doc/members/member[@name="OGD"]/*' />
+    public sealed class OnlineGradientDescentTrainer : AveragedLinearTrainer<RegressionPredictionTransformer<LinearRegressionPredictor>, LinearRegressionPredictor>
     {
         internal const string LoadNameValue = "OnlineGradientDescent";
         internal const string UserNameValue = "Stochastic Gradient Descent (Regression)";
         internal const string Summary = "Stochastic gradient descent is an optimization method used to train a wide range of models in machine learning. "
-            + "In the TLC implementation of SGD, it is for linear regression.";
+            + "In the TLC implementation of OGD, it is for linear regression.";
         internal const string ShortName = "ogd";
 
         public sealed class Arguments : AveragedLinearArguments
@@ -52,24 +52,27 @@ namespace Microsoft.ML.Runtime.Learners
         }
 
         public OnlineGradientDescentTrainer(IHostEnvironment env, Arguments args)
-            : base(args, env, UserNameValue)
+            : base(args, env, UserNameValue, MakeLabelColumn(args.LabelColumn))
         {
             LossFunction = args.LossFunction.CreateComponent(env);
+
+            _outputColumns = new[]
+            {
+                new SchemaShape.Column(DefaultColumnNames.Score, SchemaShape.Column.VectorKind.Vector, NumberType.R4, false)
+            };
         }
 
-        public override bool NeedCalibration
-        {
-            get { return false; }
-        }
+        public override PredictionKind PredictionKind => PredictionKind.Regression;
 
-        public override PredictionKind PredictionKind { get { return PredictionKind.Regression; } }
+        private readonly SchemaShape.Column[] _outputColumns;
+        protected override SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema) => _outputColumns;
 
         protected override void CheckLabel(RoleMappedData data)
         {
             data.CheckRegressionLabel();
         }
 
-        public override TPredictor CreatePredictor()
+        protected override LinearRegressionPredictor CreatePredictor()
         {
             Contracts.Assert(WeightsScale == 1);
             VBuffer<Float> weights = default(VBuffer<Float>);
@@ -89,7 +92,17 @@ namespace Microsoft.ML.Runtime.Learners
             return new LinearRegressionPredictor(Host, ref weights, bias);
         }
 
-        [TlcModule.EntryPoint(Name = "Trainers.OnlineGradientDescentRegressor", Desc = "Train a Online gradient descent perceptron.", UserName = UserNameValue, ShortName = OnlineGradientDescentTrainer.ShortName)]
+        private static SchemaShape.Column MakeLabelColumn(string labelColumn)
+        {
+            return new SchemaShape.Column(labelColumn, SchemaShape.Column.VectorKind.Scalar, NumberType.R4, false);
+        }
+
+        [TlcModule.EntryPoint(Name = "Trainers.OnlineGradientDescentRegressor",
+            Desc = "Train a Online gradient descent perceptron.",
+            UserName = UserNameValue,
+            ShortName = ShortName,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.StandardLearners/Standard/Online/doc.xml' path='doc/members/member[@name=""OGD""]/*' />",
+                                 @"<include file='../Microsoft.ML.StandardLearners/Standard/Online/doc.xml' path='doc/members/example[@name=""OGD""]/*' />"})]
         public static CommonOutputs.RegressionOutput TrainRegression(IHostEnvironment env, Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -101,5 +114,8 @@ namespace Microsoft.ML.Runtime.Learners
                 () => new OnlineGradientDescentTrainer(host, input),
                 () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.LabelColumn));
         }
+
+        protected override RegressionPredictionTransformer<LinearRegressionPredictor> MakeTransformer(LinearRegressionPredictor model, ISchema trainSchema)
+        => new RegressionPredictionTransformer<LinearRegressionPredictor>(Host, model, trainSchema, FeatureColumn.Name);
     }
 }

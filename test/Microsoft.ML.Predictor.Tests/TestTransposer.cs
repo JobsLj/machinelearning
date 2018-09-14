@@ -8,6 +8,7 @@ using System.IO;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Data.IO;
 using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.TestFramework;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -179,7 +180,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     Contracts.Assert(result);
                     Assert.True(trueIndex == index, $"Transpose schema had column '{names[i]}' at unexpected index");
                 }
-                // Check the contents 
+                // Check the contents
                 Assert.Null(trans.TransposeSchema.GetSlotType(2)); // C check to see that it's not transposable.
                 TransposeCheckHelper<DvInt4>(view, 0, trans); // A check.
                 TransposeCheckHelper<Double>(view, 1, trans); // B check.
@@ -234,7 +235,7 @@ namespace Microsoft.ML.Runtime.RunTests
             {
                 TransposeSaver saver = new TransposeSaver(Env, new TransposeSaver.Arguments());
                 saver.SaveData(mem, view, Utils.GetIdentityPermutation(view.Schema.ColumnCount));
-                src = new BytesSource(mem.ToArray());
+                src = new BytesStreamSource(mem.ToArray());
             }
             TransposeLoader loader = new TransposeLoader(Env, new TransposeLoader.Arguments(), src);
             // First check whether this as an IDataView yields the same values.

@@ -57,7 +57,7 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         /// <summary>
-        /// The anomaly detection evaluator outputs a data view by this name, which contains the the examples 
+        /// The anomaly detection evaluator outputs a data view by this name, which contains the the examples
         /// with the top scores in the test set. It contains the three columns listed below, with each row corresponding
         /// to one test example.
         /// </summary>
@@ -746,14 +746,8 @@ namespace Microsoft.ML.Runtime.Data
             ch.Info(MetricWriter.GetPerFoldResults(Host, fold, out weightedFold));
         }
 
-        protected override void PrintOverallResultsCore(IChannel ch, string filename, Dictionary<string, IDataView>[] metrics)
+        protected override IDataView GetOverallResultsCore(IDataView overall)
         {
-            ch.AssertNonEmpty(metrics);
-
-            IDataView overall;
-            if (!TryGetOverallMetrics(metrics, out overall))
-                throw ch.Except("No overall metrics found");
-
             var args = new DropColumnsTransform.Arguments();
             args.Column = new[]
             {
@@ -762,8 +756,7 @@ namespace Microsoft.ML.Runtime.Data
                 AnomalyDetectionEvaluator.OverallMetrics.ThreshAtP,
                 AnomalyDetectionEvaluator.OverallMetrics.ThreshAtNumPos
             };
-            overall = new DropColumnsTransform(Host, args, overall);
-            MetricWriter.PrintOverallMetrics(Host, ch, filename, overall, metrics.Length);
+            return new DropColumnsTransform(Host, args, overall);
         }
 
         protected override IEnumerable<string> GetPerInstanceColumnsToSave(RoleMappedSchema schema)
@@ -803,7 +796,7 @@ namespace Microsoft.ML.Runtime.Data
             string name;
             MatchColumns(host, input, out label, out weight, out name);
             var evaluator = new AnomalyDetectionMamlEvaluator(host, input);
-            var data = TrainUtils.CreateExamples(input.Data, label, null, null, weight, name);
+            var data = new RoleMappedData(input.Data, label, null, null, weight, name);
             var metrics = evaluator.Evaluate(data);
 
             var warnings = ExtractWarnings(host, metrics);

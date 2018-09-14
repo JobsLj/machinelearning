@@ -44,13 +44,16 @@ namespace Microsoft.ML.Runtime.EntryPoints
             public readonly string Description;
             public readonly string ShortName;
             public readonly string FriendlyName;
+            public readonly string[] XmlInclude;
             public readonly MethodInfo Method;
             public readonly Type InputType;
             public readonly Type OutputType;
             public readonly Type[] InputKinds;
             public readonly Type[] OutputKinds;
+            public readonly ObsoleteAttribute ObsoleteAttribute;
 
-            internal EntryPointInfo(IExceptionContext ectx, MethodInfo method, TlcModule.EntryPointAttribute attribute)
+            internal EntryPointInfo(IExceptionContext ectx, MethodInfo method,
+                TlcModule.EntryPointAttribute attribute, ObsoleteAttribute obsoleteAttribute)
             {
                 Contracts.AssertValueOrNull(ectx);
                 ectx.AssertValue(method);
@@ -61,6 +64,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
                 Method = method;
                 ShortName = attribute.ShortName;
                 FriendlyName = attribute.UserName;
+                XmlInclude = attribute.XmlInclude;
+                ObsoleteAttribute = obsoleteAttribute;
 
                 // There are supposed to be 2 parameters, env and input for non-macro nodes.
                 // Macro nodes have a 3rd parameter, the entry point node.
@@ -183,7 +188,10 @@ namespace Microsoft.ML.Runtime.EntryPoints
                     var attr = methodInfo.GetCustomAttributes(typeof(TlcModule.EntryPointAttribute), false).FirstOrDefault() as TlcModule.EntryPointAttribute;
                     if (attr == null)
                         continue;
-                    var info = new EntryPointInfo(ectx, methodInfo, attr);
+
+                    var info = new EntryPointInfo(ectx, methodInfo, attr,
+                        methodInfo.GetCustomAttributes(typeof(ObsoleteAttribute), false).FirstOrDefault() as ObsoleteAttribute);
+
                     entryPoints.Add(info);
                     if (_entryPointMap.ContainsKey(info.Name))
                     {
@@ -253,7 +261,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
 
         /// <summary>
-        /// The valid names for the components and entry points must consist of letters, digits, underscores and dots, 
+        /// The valid names for the components and entry points must consist of letters, digits, underscores and dots,
         /// and begin with a letter or digit.
         /// </summary>
         private static readonly Regex _nameRegex = new Regex(@"^\w[_\.\w]*$", RegexOptions.Compiled);
@@ -309,7 +317,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             Contracts.CheckParam(interfaceType.IsInterface, nameof(interfaceType), "Must be interface");
             Contracts.CheckValue(argumentType, nameof(argumentType));
 
-            component = _components.FirstOrDefault(x => x.InterfaceType == interfaceType &&  x.ArgumentType == argumentType);
+            component = _components.FirstOrDefault(x => x.InterfaceType == interfaceType && x.ArgumentType == argumentType);
             return component != null;
         }
 

@@ -21,32 +21,32 @@ using Microsoft.ML.Runtime.Internal.Internallearn;
 [assembly: LoadableClass(typeof(void), typeof(Categorical), null, typeof(SignatureEntryPointModule), "Categorical")]
 namespace Microsoft.ML.Runtime.Data
 {
-    /// <summary>
-    /// Categorical trans.
-    /// Each column can specify an output kind, Bag, Ind, or Key.
-    /// Notes:
-    /// * Each column builds/uses exactly one "vocabulary" (dictionary).
-    /// * The Key output kind produces integer values and KeyType columns.
-    /// * The Key value is the one-based index of the slot set in the Ind/Bag options.
-    /// * In the Key option, not found is assigned the value zero.
-    /// * In the Ind/Bag options, not found results in an all zero bit vector.
-    /// * Ind and Bag differ simply in how the bit-vectors generated from individual slots are aggregated:
-    ///   for Ind they are concatenated and for Bag they are added.
-    /// * When the source column is a singleton, the Ind and Bag options are identical.
-    /// </summary>
+    /// <include file='doc.xml' path='doc/members/member[@name="CategoricalOneHotVectorizer"]/*' />
     public static class CategoricalTransform
     {
         public enum OutputKind : byte
         {
+            /// <summary>
+            /// Output is a bag (multi-set) vector
+            /// </summary>
             [TGUI(Label = "Output is a bag (multi-set) vector")]
             Bag = 1,
 
+            /// <summary>
+            /// Output is an indicator vector
+            /// </summary>
             [TGUI(Label = "Output is an indicator vector")]
             Ind = 2,
 
+            /// <summary>
+            /// Output is a key value
+            /// </summary>
             [TGUI(Label = "Output is a key value")]
             Key = 3,
 
+            /// <summary>
+            /// Output is binary encoded
+            /// </summary>
             [TGUI(Label = "Output is binary encoded")]
             Bin = 4,
         }
@@ -96,6 +96,11 @@ namespace Microsoft.ML.Runtime.Data
             }
         }
 
+        private static class Defaults
+        {
+            public const OutputKind OutKind = OutputKind.Ind;
+        }
+
         public sealed class Arguments : TermTransform.ArgumentsBase
         {
             [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:src)", ShortName = "col", SortOrder = 1)]
@@ -103,7 +108,7 @@ namespace Microsoft.ML.Runtime.Data
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Output kind: Bag (multi-set vector), Ind (indicator vector), or Key (index)",
                 ShortName = "kind", SortOrder = 102)]
-            public OutputKind OutputKind = OutputKind.Ind;
+            public OutputKind OutputKind = Defaults.OutKind;
 
             public Arguments()
             {
@@ -118,6 +123,28 @@ namespace Microsoft.ML.Runtime.Data
 
         public const string UserName = "Categorical Transform";
 
+        /// <summary>
+        /// A helper method to create <see cref="CategoricalTransform"/> for public facing API.
+        /// </summary>
+        /// <param name="env">Host Environment.</param>
+        /// <param name="input">Input <see cref="IDataView"/>. This is the output from previous transform or loader.</param>
+        /// <param name="name">Name of the output column.</param>
+        /// <param name="source">Name of the column to be transformed. If this is null '<paramref name="name"/>' will be used.</param>
+        /// <param name="outputKind">The type of output expected.</param>
+        public static IDataTransform Create(IHostEnvironment env, IDataView input, string name, string source = null, OutputKind outputKind = Defaults.OutKind)
+        {
+            var args = new Arguments()
+            {
+                Column = new[] { new Column(){
+                        Source = source ?? name,
+                        Name = name
+                    }
+                },
+                OutputKind = outputKind
+            };
+            return Create(env, args, input);
+        }
+
         public static IDataTransform Create(IHostEnvironment env, Arguments args, IDataView input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -129,7 +156,7 @@ namespace Microsoft.ML.Runtime.Data
                 args.OutputKind,
                 args.Column,
                 args.Column.Select(col => col.OutputKind).ToList(),
-                new TermTransform(args, args.Column, h, input),
+                 TermTransform.Create(h, args, args.Column, input),
                 h,
                 env);
         }
@@ -147,10 +174,10 @@ namespace Microsoft.ML.Runtime.Data
             Contracts.CheckValue(columnOutputKinds, nameof(columnOutputKinds));
             Contracts.CheckParam(columns.Length == columnOutputKinds.Count, nameof(columns));
 
-            using (var ch = h.Start("Create Tranform Core"))
+            using (var ch = h.Start("Create Transform Core"))
             {
                 // Create the KeyToVectorTransform, if needed.
-                List<KeyToVectorTransform.Column> cols = new List<KeyToVectorTransform.Column>();
+                var cols = new List<KeyToVectorTransform.Column>();
                 bool binaryEncoding = argsOutputKind == OutputKind.Bin;
                 for (int i = 0; i < columns.Length; i++)
                 {
@@ -193,19 +220,14 @@ namespace Microsoft.ML.Runtime.Data
                     if ((catHashArgs?.InvertHash ?? 0) != 0)
                         ch.Warning("Invert hashing is being used with binary encoding.");
 
-                    var keyToBinaryArgs = new KeyToBinaryVectorTransform.Arguments();
-                    keyToBinaryArgs.Column = cols.ToArray();
-                    transform = new KeyToBinaryVectorTransform(h, keyToBinaryArgs, input);
+                    var keyToBinaryVecCols = cols.Select(x => new KeyToBinaryVectorTransform.ColumnInfo(x.Source, x.Name)).ToArray();
+                    transform = KeyToBinaryVectorTransform.Create(h, input, keyToBinaryVecCols);
                 }
                 else
                 {
-                    var keyToVecArgs = new KeyToVectorTransform.Arguments
-                    {
-                        Bag = argsOutputKind == OutputKind.Bag,
-                        Column = cols.ToArray()
-                    };
+                    var keyToVecCols = cols.Select(x => new KeyToVectorTransform.ColumnInfo(x.Source, x.Name, x.Bag ?? argsOutputKind == OutputKind.Bag)).ToArray();
 
-                    transform = new KeyToVectorTransform(h, keyToVecArgs, input);
+                    transform = KeyToVectorTransform.Create(h, input, keyToVecCols);
                 }
 
                 ch.Done();
@@ -216,7 +238,11 @@ namespace Microsoft.ML.Runtime.Data
 
     public static class Categorical
     {
-        [TlcModule.EntryPoint(Name = "Transforms.CategoricalOneHotVectorizer", Desc = "Encodes the categorical variable with one-hot encoding based on term dictionary", UserName = CategoricalTransform.UserName)]
+        [TlcModule.EntryPoint(Name = "Transforms.CategoricalOneHotVectorizer",
+            Desc = CategoricalTransform.Summary,
+            UserName = CategoricalTransform.UserName,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/member[@name=""CategoricalOneHotVectorizer""]/*' />",
+                                 @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/example[@name=""CategoricalOneHotVectorizer""]/*' />"})]
         public static CommonOutputs.TransformOutput CatTransformDict(IHostEnvironment env, CategoricalTransform.Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -228,7 +254,11 @@ namespace Microsoft.ML.Runtime.Data
             return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
         }
 
-        [TlcModule.EntryPoint(Name = "Transforms.CategoricalHashOneHotVectorizer", Desc = "Encodes the categorical variable with hash-based encoding", UserName = CategoricalHashTransform.UserName)]
+        [TlcModule.EntryPoint(Name = "Transforms.CategoricalHashOneHotVectorizer",
+            Desc = CategoricalHashTransform.Summary,
+            UserName = CategoricalHashTransform.UserName,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/member[@name=""CategoricalHashOneHotVectorizer""]/*' />",
+                                 @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/example[@name=""CategoricalHashOneHotVectorizer""]/*' />"})]
         public static CommonOutputs.TransformOutput CatTransformHash(IHostEnvironment env, CategoricalHashTransform.Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -240,7 +270,11 @@ namespace Microsoft.ML.Runtime.Data
             return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
         }
 
-        [TlcModule.EntryPoint(Name = "Transforms.TextToKeyConverter", Desc = TermTransform.Summary, UserName = TermTransform.UserName)]
+        [TlcModule.EntryPoint(Name = "Transforms.TextToKeyConverter",
+            Desc = TermTransform.Summary,
+            UserName = TermTransform.UserName,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.Data/Transforms/doc.xml' path='doc/members/member[@name=""TextToKey""]/*' />",
+                                 @"<include file='../Microsoft.ML.Data/Transforms/doc.xml' path='doc/members/example[@name=""TextToKey""]/*' />" })]
         public static CommonOutputs.TransformOutput TextToKey(IHostEnvironment env, TermTransform.Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -248,11 +282,14 @@ namespace Microsoft.ML.Runtime.Data
             host.CheckValue(input, nameof(input));
             EntryPointUtils.CheckInputArgs(host, input);
 
-            var xf = new TermTransform(host, input, input.Data);
+            var xf = TermTransform.Create(host, input, input.Data);
             return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
         }
 
-        [TlcModule.EntryPoint(Name = "Transforms.KeyToTextConverter", Desc = "KeyToValueTransform utilizes KeyValues metadata to map key indices to the corresponding values in the KeyValues metadata.", UserName = KeyToValueTransform.UserName)]
+        [TlcModule.EntryPoint(Name = "Transforms.KeyToTextConverter",
+            Desc = "KeyToValueTransform utilizes KeyValues metadata to map key indices to the corresponding values in the KeyValues metadata.",
+            UserName = KeyToValueTransform.UserName,
+            XmlInclude = new[] { @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/member[@name=""KeyToText""]/*' />" })]
         public static CommonOutputs.TransformOutput KeyToText(IHostEnvironment env, KeyToValueTransform.Arguments input)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -260,7 +297,7 @@ namespace Microsoft.ML.Runtime.Data
             host.CheckValue(input, nameof(input));
             EntryPointUtils.CheckInputArgs(host, input);
 
-            var xf = new KeyToValueTransform(host, input, input.Data);
+            var xf = KeyToValueTransform.Create(host, input, input.Data);
             return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
         }
     }

@@ -122,9 +122,7 @@ namespace Microsoft.ML.Runtime.Tools
                         return -1;
                     }
 
-                    var cmdDef = new SubComponent<ICommand, SignatureCommand>(kind, settings);
-
-                    if (!ComponentCatalog.TryCreateInstance(mainHost, out ICommand cmd, cmdDef))
+                    if (!ComponentCatalog.TryCreateInstance<ICommand, SignatureCommand>(mainHost, out ICommand cmd, kind, settings))
                     {
                         // Telemetry: Log
                         telemetryPipe.Send(TelemetryMessage.CreateCommand("UnknownCommand", settings));
@@ -145,7 +143,7 @@ namespace Microsoft.ML.Runtime.Tools
                         Path.GetTempPath(),
                         "TLC");
                     var dumpFilePath = Path.Combine(dumpFileDir,
-                        string.Format(CultureInfo.InvariantCulture, "Error_{0:yyyyMMdd_HHmmss}_{1}.log", DateTime.Now, Guid.NewGuid()));
+                        string.Format(CultureInfo.InvariantCulture, "Error_{0:yyyyMMdd_HHmmss}_{1}.log", DateTime.UtcNow, Guid.NewGuid()));
                     bool isDumpSaved = false;
                     try
                     {
@@ -183,16 +181,16 @@ namespace Microsoft.ML.Runtime.Tools
                     if (count == 0)
                     {
                         // Didn't recognize any of the exceptions.
-                        ch.Error(MessageSensitivity.None, "***** Unexpected failure. Please contact 'tlcsupp' with details *****");
+                        ch.Error(MessageSensitivity.None, "***** Unexpected failure. Please refer to https://aka.ms/MLNetIssue to file an issue with details *****");
                         if (isDumpSaved)
                         {
-                            ch.Error(MessageSensitivity.None, "***** Error log has been saved to '{0}', please send this file to 'tlcsupp' *****",
+                            ch.Error(MessageSensitivity.None, "***** Error log has been saved to '{0}', please refer to https://aka.ms/MLNetIssue to file an issue with details *****",
                                 dumpFilePath);
                         }
                     }
                     else if (isDumpSaved)
                     {
-                        ch.Error(MessageSensitivity.None, "Error log has been saved to '{0}'. Please send this file to 'tlcsupp' if you need assistance.",
+                        ch.Error(MessageSensitivity.None, "Error log has been saved to '{0}'. Please refer to https://aka.ms/MLNetIssue if you need assistance.",
                             dumpFilePath);
                     }
 
