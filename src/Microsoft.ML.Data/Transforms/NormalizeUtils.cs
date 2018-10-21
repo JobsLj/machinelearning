@@ -11,7 +11,7 @@ using Microsoft.ML.Runtime.Model.Onnx;
 using Microsoft.ML.Runtime.Model.Pfa;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
-using Microsoft.ML.Data.StaticPipe.Runtime;
+using Microsoft.ML.StaticPipe;
 
 [assembly: LoadableClass(typeof(void), typeof(Normalize), null, typeof(SignatureEntryPointModule), "Normalize")]
 
@@ -60,7 +60,7 @@ namespace Microsoft.ML.Runtime.Data
 
         JToken PfaInfo(BoundPfaContext ctx, JToken srcToken);
 
-        bool CanSaveOnnx { get; }
+        bool CanSaveOnnx(OnnxContext ctx);
 
         bool OnnxInfo(OnnxContext ctx, OnnxNode nodeProtoWrapper, int featureCount);
     }
@@ -73,9 +73,9 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         /// <param name="schema">The role-mapped schema to query</param>
         /// <returns>Returns null if <paramref name="schema"/> does not have <see cref="RoleMappedSchema.Feature"/>
-        /// defined, and otherwise returns a Boolean value as returned from <see cref="MetadataUtils.IsNormalized(ISchema, int)"/>
+        /// defined, and otherwise returns a Boolean value as returned from <see cref="MetadataUtils.IsNormalized(Schema, int)"/>
         /// on that feature column</returns>
-        /// <seealso cref="MetadataUtils.IsNormalized(ISchema, int)"/>
+        /// <seealso cref="MetadataUtils.IsNormalized(Schema, int)"/>
         public static bool? FeaturesAreNormalized(this RoleMappedSchema schema)
         {
             // REVIEW: The role mapped data has the ability to have multiple columns fill the role of features, which is
@@ -146,7 +146,6 @@ namespace Microsoft.ML.Runtime.Data
             EntryPointNode node)
         {
             var schema = input.Data.Schema;
-            DvBool isNormalized = DvBool.False;
             var columnsToNormalize = new List<NormalizeTransform.AffineColumn>();
             foreach (var column in input.Column)
             {
@@ -159,15 +158,13 @@ namespace Microsoft.ML.Runtime.Data
             var entryPoints = new List<EntryPointNode>();
             if (columnsToNormalize.Count == 0)
             {
-                var entryPointNode = EntryPointNode.Create(env, "Transforms.NoOperation", new NopTransform.NopInput(),
-                    node.Catalog, node.Context, node.InputBindingMap, node.InputMap, node.OutputMap);
+                var entryPointNode = EntryPointNode.Create(env, "Transforms.NoOperation", new NopTransform.NopInput(), node.Context, node.InputBindingMap, node.InputMap, node.OutputMap);
                 entryPoints.Add(entryPointNode);
             }
             else
             {
                 input.Column = columnsToNormalize.ToArray();
-                var entryPointNode = EntryPointNode.Create(env, "Transforms.MinMaxNormalizer", input,
-                    node.Catalog, node.Context, node.InputBindingMap, node.InputMap, node.OutputMap);
+                var entryPointNode = EntryPointNode.Create(env, "Transforms.MinMaxNormalizer", input, node.Context, node.InputBindingMap, node.InputMap, node.OutputMap);
                 entryPoints.Add(entryPointNode);
             }
 

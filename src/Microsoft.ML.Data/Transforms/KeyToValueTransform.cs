@@ -8,7 +8,6 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Data.StaticPipe.Runtime;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
@@ -17,6 +16,8 @@ using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
 using Microsoft.ML.Runtime.Model.Pfa;
+using Microsoft.ML.StaticPipe;
+using Microsoft.ML.StaticPipe.Runtime;
 using Newtonsoft.Json.Linq;
 
 [assembly: LoadableClass(typeof(IDataTransform), typeof(KeyToValueTransform), typeof(KeyToValueTransform.Arguments), typeof(SignatureDataTransform),
@@ -76,7 +77,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x00010001, // Initial
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(KeyToValueTransform).Assembly.FullName);
         }
 
         /// <summary>
@@ -112,7 +114,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Factory method for SignatureLoadModel.
         /// </summary>
-        public static KeyToValueTransform Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static KeyToValueTransform Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(nameof(KeyToValueTransform));
@@ -129,13 +131,13 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Factory method for SignatureLoadDataTransform.
         /// </summary>
-        public static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
             => Create(env, ctx).MakeDataTransform(input);
 
         /// <summary>
         /// Factory method for SignatureLoadRowMapper.
         /// </summary>
-        public static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
         public override void Save(ModelSaveContext ctx)
@@ -151,7 +153,7 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         protected override IRowMapper MakeRowMapper(ISchema inputSchema)
-            => new Mapper(this, inputSchema);
+            => new Mapper(this, Schema.Create(inputSchema));
 
         private sealed class Mapper : MapperBase, ISaveAsPfa
         {
@@ -159,7 +161,7 @@ namespace Microsoft.ML.Runtime.Data
             private readonly ColumnType[] _types;
             private readonly KeyToValueMap[] _kvMaps;
 
-            public Mapper(KeyToValueTransform parent, ISchema inputSchema)
+            public Mapper(KeyToValueTransform parent, Schema inputSchema)
                 : base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
             {
                 _parent = parent;
@@ -168,14 +170,14 @@ namespace Microsoft.ML.Runtime.Data
 
             public bool CanSavePfa => true;
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
+            public override Schema.Column[] GetOutputColumns()
             {
-                var result = new RowMapperColumnInfo[_parent.ColumnPairs.Length];
+                var result = new Schema.Column[_parent.ColumnPairs.Length];
                 for (int i = 0; i < _parent.ColumnPairs.Length; i++)
                 {
-                    var meta = RowColumnUtils.GetMetadataAsRow(InputSchema, ColMapNewToOld[i],
-                        x => x == MetadataUtils.Kinds.SlotNames);
-                    result[i] = new RowMapperColumnInfo(_parent.ColumnPairs[i].output, _types[i], meta);
+                    var meta = new Schema.Metadata.Builder();
+                    meta.Add(InputSchema[ColMapNewToOld[i]].Metadata, name => name == MetadataUtils.Kinds.SlotNames);
+                    result[i] = new Schema.Column(_parent.ColumnPairs[i].output, _types[i], meta.GetMetadata());
                 }
                 return result;
             }
@@ -252,7 +254,7 @@ namespace Microsoft.ML.Runtime.Data
                 Host.Assert(typeVal.ItemType.RawType == typeof(TValue));
 
                 var keyMetadata = default(VBuffer<TValue>);
-                InputSchema.GetMetadata(MetadataUtils.Kinds.KeyValues, ColMapNewToOld[iinfo], ref keyMetadata);
+                InputSchema[ColMapNewToOld[iinfo]].Metadata.GetValue(MetadataUtils.Kinds.KeyValues, ref keyMetadata);
                 Host.Check(keyMetadata.Length == typeKey.ItemType.KeyCount);
 
                 VBufferUtils.Densify(ref keyMetadata);
@@ -316,21 +318,12 @@ namespace Microsoft.ML.Runtime.Data
                     _values = values;
 
                     // REVIEW: May want to include more specific information about what the specific value is for the default.
-                    using (var ch = Parent.Host.Start("Getting NA Predicate and Value"))
-                    {
-                        _na = Conversions.Instance.GetNAOrDefault<TValue>(TypeOutput.ItemType, out _naMapsToDefault);
+                    _na = Conversions.Instance.GetNAOrDefault<TValue>(TypeOutput.ItemType, out _naMapsToDefault);
 
-                        if (_naMapsToDefault)
-                        {
-                            // Only initialize _isDefault if _defaultIsNA is true as this is the only case in which it is used.
-                            _isDefault = Conversions.Instance.GetIsDefaultPredicate<TValue>(TypeOutput.ItemType);
-                            RefPredicate<TValue> del;
-                            if (!Conversions.Instance.TryGetIsNAPredicate<TValue>(TypeOutput.ItemType, out del))
-                            {
-                                ch.Warning("There is no NA value for type '{0}'. The missing key value " +
-                                    "will be mapped to the default value of '{0}'", TypeOutput.ItemType);
-                            }
-                        }
+                    if (_naMapsToDefault)
+                    {
+                        // Only initialize _isDefault if _defaultIsNA is true as this is the only case in which it is used.
+                        _isDefault = Conversions.Instance.GetIsDefaultPredicate<TValue>(TypeOutput.ItemType);
                     }
 
                     bool identity;
@@ -486,7 +479,7 @@ namespace Microsoft.ML.Runtime.Data
                     string cellName = ctx.DeclareCell("KeyToValueMap", PfaUtils.Type.Array(outType), jsonValues);
                     JObject cellRef = PfaUtils.Cell(cellName);
 
-                    var srcType = Parent.InputSchema.GetColumnType(Parent.ColMapNewToOld[InfoIndex]);
+                    var srcType = Parent.InputSchema[Parent.ColMapNewToOld[InfoIndex]].Type;
                     if (srcType.IsVector)
                     {
                         var funcName = ctx.GetFreeFunctionName("mapKeyToValue");

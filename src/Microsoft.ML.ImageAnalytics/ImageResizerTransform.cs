@@ -8,7 +8,6 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Data.StaticPipe.Runtime;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
@@ -17,6 +16,8 @@ using Microsoft.ML.Runtime.ImageAnalytics;
 using Microsoft.ML.Runtime.Internal.Internallearn;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.StaticPipe;
+using Microsoft.ML.StaticPipe.Runtime;
 
 [assembly: LoadableClass(ImageResizerTransform.Summary, typeof(IDataTransform), typeof(ImageResizerTransform), typeof(ImageResizerTransform.Arguments),
     typeof(SignatureDataTransform), ImageResizerTransform.UserName, "ImageResizerTransform", "ImageResizer")]
@@ -154,7 +155,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 verWrittenCur: 0x00010003, // No more sizeof(float)
                 verReadableCur: 0x00010003,
                 verWeCanReadBack: 0x00010003,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(ImageResizerTransform).Assembly.FullName);
         }
 
         private const string RegistrationName = "ImageScaler";
@@ -206,7 +208,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             return new ImageResizerTransform(env, cols).MakeDataTransform(input);
         }
 
-        public static ImageResizerTransform Create(IHostEnvironment env, ModelLoadContext ctx)
+        // Factory method for SignatureLoadModel.
+        private static ImageResizerTransform Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(RegistrationName);
@@ -245,11 +248,11 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
         }
 
         // Factory method for SignatureLoadDataTransform.
-        public static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
             => Create(env, ctx).MakeDataTransform(input);
 
         // Factory method for SignatureLoadRowMapper.
-        public static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
         public override void Save(ModelSaveContext ctx)
@@ -282,7 +285,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
         }
 
         protected override IRowMapper MakeRowMapper(ISchema schema)
-            => new Mapper(this, schema);
+            => new Mapper(this, Schema.Create(schema));
 
         protected override void CheckInputColumn(ISchema inputSchema, int col, int srcCol)
         {
@@ -294,14 +297,14 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
         {
             private readonly ImageResizerTransform _parent;
 
-            public Mapper(ImageResizerTransform parent, ISchema inputSchema)
-                :base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
+            public Mapper(ImageResizerTransform parent, Schema inputSchema)
+                : base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
             {
                 _parent = parent;
             }
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
-                => _parent._columns.Select(x => new RowMapperColumnInfo(x.Output, x.Type, null)).ToArray();
+            public override Schema.Column[] GetOutputColumns()
+                => _parent._columns.Select(x => new Schema.Column(x.Output, x.Type, null)).ToArray();
 
             protected override Delegate MakeGetter(IRow input, int iinfo, out Action disposer)
             {
@@ -458,7 +461,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             return new SchemaShape(result.Values);
         }
 
-        internal sealed class OutPipelineColumn : Scalar<Bitmap>
+        internal sealed class OutPipelineColumn : Custom<Bitmap>
         {
             private readonly PipelineColumn _input;
             private readonly int _width;
@@ -484,8 +487,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             /// <summary>
             /// Reconciler to an <see cref="ImageResizerTransform"/> for the <see cref="PipelineColumn"/>.
             /// </summary>
-            /// <seealso cref="ImageStaticPipe.Resize(Scalar{Bitmap}, int, int, ImageResizerTransform.ResizingKind, ImageResizerTransform.Anchor)"/>
-            /// <seealso cref="ImageStaticPipe.Resize(Scalar{UnknownSizeBitmap}, int, int, ImageResizerTransform.ResizingKind, ImageResizerTransform.Anchor)"/>
+            /// <seealso cref="ImageStaticPipe.Resize(Custom{Bitmap}, int, int, ImageResizerTransform.ResizingKind, ImageResizerTransform.Anchor)"/>
+            /// <seealso cref="ImageStaticPipe.Resize(Custom{UnknownSizeBitmap}, int, int, ImageResizerTransform.ResizingKind, ImageResizerTransform.Anchor)"/>
             private sealed class Reconciler : EstimatorReconciler
             {
                 public static Reconciler Inst = new Reconciler();

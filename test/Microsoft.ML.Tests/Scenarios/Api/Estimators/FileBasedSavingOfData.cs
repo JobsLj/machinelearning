@@ -6,6 +6,8 @@ using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Data.IO;
 using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Runtime.RunTests;
+using System.IO;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -22,25 +24,21 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         [Fact]
         void New_FileBasedSavingOfData()
         {
-            var dataPath = GetDataPath(SentimentDataPath);
-            var testDataPath = GetDataPath(SentimentTestPath);
 
-            using (var env = new TlcEnvironment(seed: 1, conc: 1))
-            {
-                var trainData = new TextLoader(env, MakeSentimentTextLoaderArgs())
-                    .Append(new TextTransform(env, "SentimentText", "Features"))
-                    .FitAndRead(new MultiFileSource(dataPath));
+            var ml = new MLContext(seed: 1, conc: 1);
+            var trainData = ml.Data.TextReader(MakeSentimentTextLoaderArgs())
+                .Append(ml.Transforms.Text.FeaturizeText("SentimentText", "Features"))
+                .FitAndRead(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
 
-                using (var file = env.CreateOutputFile("i.idv"))
-                    trainData.SaveAsBinary(env, file.CreateWriteStream());
+            using (var file = File.Create(GetOutputPath("i.idv")))
+                trainData.SaveAsBinary(ml, file);
 
-                var trainer = new LinearClassificationTrainer(env, new LinearClassificationTrainer.Arguments { NumThreads = 1 }, "Features", "Label");
-                var loadedTrainData = new BinaryLoader(env, new BinaryLoader.Arguments(), new MultiFileSource("i.idv"));
+            var trainer = ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: s => s.NumThreads = 1);
+            var loadedTrainData = new BinaryLoader(ml, new BinaryLoader.Arguments(), new MultiFileSource("i.idv"));
 
-                // Train.
-                var model = trainer.Train(new RoleMappedData(loadedTrainData, DefaultColumnNames.Label, DefaultColumnNames.Features));
-                DeleteOutputPath("i.idv");
-            }
+            // Train.
+            var model = trainer.Fit(loadedTrainData);
+            DeleteOutputPath("i.idv");
         }
     }
 }

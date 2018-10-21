@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.ML.Core.Data;
 using Microsoft.ML.Runtime.Data;
@@ -14,7 +15,7 @@ namespace Microsoft.ML.Runtime.Training
     /// It produces a 'prediction transformer'.
     /// </summary>
     public abstract class TrainerEstimatorBase<TTransformer, TModel> : ITrainerEstimator<TTransformer, TModel>, ITrainer<TModel>
-        where TTransformer : IPredictionTransformer<TModel>
+        where TTransformer : ISingleFeaturePredictionTransformer<TModel>
         where TModel : IPredictor
     {
         /// <summary>
@@ -146,7 +147,7 @@ namespace Microsoft.ML.Runtime.Training
 
         protected abstract TModel TrainModelCore(TrainContext trainContext);
 
-        protected abstract TTransformer MakeTransformer(TModel model, ISchema trainSchema);
+        protected abstract TTransformer MakeTransformer(TModel model, Schema trainSchema);
 
         private RoleMappedData MakeRoles(IDataView data) =>
             new RoleMappedData(data, label: LabelColumn?.Name, feature: FeatureColumn.Name, weight: WeightColumn?.Name);

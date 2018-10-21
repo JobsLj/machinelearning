@@ -13,7 +13,6 @@ using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Data.Conversion;
 using Microsoft.ML.Runtime.Data.IO;
 using Microsoft.ML.Runtime.Data.Utilities;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
 
@@ -61,7 +60,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x00010001, // Initial
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoadName);
+                loaderSignature: LoadName,
+                loaderAssemblyName: typeof(PartitionedFileLoader).Assembly.FullName);
         }
 
         public class Arguments
@@ -285,7 +285,7 @@ namespace Microsoft.ML.Runtime.Data
 
         public bool CanShuffle => true;
 
-        public ISchema Schema { get; }
+        public Schema Schema { get; }
 
         public long? GetRowCount(bool lazy = true)
         {
@@ -311,13 +311,12 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="cols">The partitioned columns.</param>
         /// <param name="subLoader">The sub loader.</param>
         /// <returns>The resulting schema.</returns>
-        private ISchema CreateSchema(IExceptionContext ectx, Column[] cols, IDataLoader subLoader)
+        private Schema CreateSchema(IExceptionContext ectx, Column[] cols, IDataLoader subLoader)
         {
             Contracts.AssertValue(cols);
             Contracts.AssertValue(subLoader);
 
-            var columnNameTypes = cols.Select((col) => new KeyValuePair<string, ColumnType>(col.Name, PrimitiveType.FromKind(col.Type.Value)));
-            var colSchema = new SimpleSchema(ectx, columnNameTypes.ToArray());
+            var colSchema = new Schema(cols.Select(c => new Schema.Column(c.Name, PrimitiveType.FromKind(c.Type.Value), null)));
 
             var subSchema = subLoader.Schema;
 
@@ -333,11 +332,11 @@ namespace Microsoft.ML.Runtime.Data
                     colSchema
                 };
 
-                return new CompositeSchema(schemas);
+                return Schema.Create(new CompositeSchema(schemas));
             }
         }
 
-        private byte [] SaveLoaderToBytes(IDataLoader loader)
+        private byte[] SaveLoaderToBytes(IDataLoader loader)
         {
             Contracts.CheckValue(loader, nameof(loader));
 
@@ -348,7 +347,7 @@ namespace Microsoft.ML.Runtime.Data
             }
         }
 
-        private IDataLoader CreateLoaderFromBytes(byte [] loaderBytes, IMultiStreamSource files)
+        private IDataLoader CreateLoaderFromBytes(byte[] loaderBytes, IMultiStreamSource files)
         {
             Contracts.CheckValue(loaderBytes, nameof(loaderBytes));
             Contracts.CheckValue(files, nameof(files));
@@ -369,7 +368,7 @@ namespace Microsoft.ML.Runtime.Data
             private Delegate[] _getters;
             private Delegate[] _subGetters; // Cached getters of the sub-cursor.
 
-            private DvText[] _colValues; // Column values cached from the file path.
+            private ReadOnlyMemory<char>[] _colValues; // Column values cached from the file path.
             private IRowCursor _subCursor; // Sub cursor of the current file.
 
             private IEnumerator<int> _fileOrder;
@@ -385,7 +384,7 @@ namespace Microsoft.ML.Runtime.Data
 
                 _active = Utils.BuildArray(Schema.ColumnCount, predicate);
                 _subActive = _active.Take(SubColumnCount).ToArray();
-                _colValues = new DvText[Schema.ColumnCount - SubColumnCount];
+                _colValues = new ReadOnlyMemory<char>[Schema.ColumnCount - SubColumnCount];
 
                 _subGetters = new Delegate[SubColumnCount];
                 _getters = CreateGetters();
@@ -395,7 +394,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public override long Batch => 0;
 
-            public ISchema Schema => _parent.Schema;
+            public Schema Schema => _parent.Schema;
 
             public ValueGetter<TValue> GetGetter<TValue>(int col)
             {
@@ -538,13 +537,13 @@ namespace Microsoft.ML.Runtime.Data
                     var source = _parent._srcDirIndex[i];
                     if (source >= 0 && source < values.Count)
                     {
-                        _colValues[i] = new DvText(values[source]);
+                        _colValues[i] = values[source].AsMemory();
                     }
                     else if (source == FilePathColIndex)
                     {
                         // Force Unix path for consistency.
                         var cleanPath = path.Replace(@"\", @"/");
-                        _colValues[i] = new DvText(cleanPath);
+                        _colValues[i] = cleanPath.AsMemory();
                     }
                 }
             }
@@ -603,7 +602,7 @@ namespace Microsoft.ML.Runtime.Data
                 Ch.Check(col >= 0 && col < _colValues.Length);
                 Ch.AssertValue(type);
 
-                var conv = Conversions.Instance.GetStandardConversion(TextType.Instance, type) as ValueMapper<DvText, TValue>;
+                var conv = Conversions.Instance.GetStandardConversion(TextType.Instance, type) as ValueMapper<ReadOnlyMemory<char>, TValue>;
                 if (conv == null)
                 {
                     throw Ch.Except("Invalid TValue: '{0}' of the conversion.", typeof(TValue));

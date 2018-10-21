@@ -3,7 +3,6 @@
 // See the LICENSE file in the project root for more information.
 
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Data.StaticPipe.Runtime;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
@@ -11,6 +10,8 @@ using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.ImageAnalytics;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.StaticPipe;
+using Microsoft.ML.StaticPipe.Runtime;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -31,7 +32,7 @@ using System.Text;
 namespace Microsoft.ML.Runtime.ImageAnalytics
 {
     /// <summary>
-    /// Transform which takes one or many columns of type <see cref="DvText"/> and loads them as <see cref="ImageType"/>
+    /// Transform which takes one or many columns of type ReadOnlyMemory and loads them as <see cref="ImageType"/>
     /// </summary>
     public sealed class ImageLoaderTransform : OneToOneTransformerBase
     {
@@ -84,7 +85,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 .MakeDataTransform(data);
         }
 
-        public static ImageLoaderTransform Create(IHostEnvironment env, ModelLoadContext ctx)
+        // Factory method for SignatureLoadModel.
+        private static ImageLoaderTransform Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
@@ -104,11 +106,11 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
         }
 
         // Factory method for SignatureLoadDataTransform.
-        public static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
             => Create(env, ctx).MakeDataTransform(input);
 
         // Factory method for SignatureLoadRowMapper.
-        public static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
         protected override void CheckInputColumn(ISchema inputSchema, int col, int srcCol)
@@ -140,18 +142,19 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 verWrittenCur: 0x00010002, // Swith from OpenCV to Bitmap
                 verReadableCur: 0x00010002,
                 verWeCanReadBack: 0x00010002,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(ImageLoaderTransform).Assembly.FullName);
         }
 
         protected override IRowMapper MakeRowMapper(ISchema schema)
-            => new Mapper(this, schema);
+            => new Mapper(this, Schema.Create(schema));
 
         private sealed class Mapper : MapperBase
         {
             private readonly ImageLoaderTransform _parent;
             private readonly ImageType _imageType;
 
-            public Mapper(ImageLoaderTransform parent, ISchema inputSchema)
+            public Mapper(ImageLoaderTransform parent, Schema inputSchema)
                 : base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
             {
                 _imageType = new ImageType();
@@ -164,8 +167,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 Contracts.Assert(0 <= iinfo && iinfo < _parent.ColumnPairs.Length);
 
                 disposer = null;
-                var getSrc = input.GetGetter<DvText>(ColMapNewToOld[iinfo]);
-                DvText src = default;
+                var getSrc = input.GetGetter<ReadOnlyMemory<char>>(ColMapNewToOld[iinfo]);
+                ReadOnlyMemory<char> src = default;
                 ValueGetter<Bitmap> del =
                     (ref Bitmap dst) =>
                     {
@@ -193,17 +196,19 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                                 // appears to be incorrect. When the file isn't found, it throws an ArgumentException,
                                 // while the documentation says FileNotFoundException. Not sure what it will throw
                                 // in other cases, like corrupted file, etc.
-
-                                // REVIEW : Log failures.
-                                dst = null;
+                                throw Host.Except($"Image {src.ToString()} was not found.");
                             }
+
+                            // Check for an incorrect pixel format which indicates the loading failed
+                            if (dst.PixelFormat == System.Drawing.Imaging.PixelFormat.DontCare)
+                                throw Host.Except($"Failed to load image {src.ToString()}.");
                         }
                     };
                 return del;
             }
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
-                => _parent.ColumnPairs.Select(x => new RowMapperColumnInfo(x.output, _imageType, null)).ToArray();
+            public override Schema.Column[] GetOutputColumns()
+                => _parent.ColumnPairs.Select(x => new Schema.Column(x.output, _imageType, null)).ToArray();
         }
     }
 
@@ -239,7 +244,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             return new SchemaShape(result.Values);
         }
 
-        internal sealed class OutPipelineColumn : Scalar<UnknownSizeBitmap>
+        internal sealed class OutPipelineColumn : Custom<UnknownSizeBitmap>
         {
             private readonly Scalar<string> _input;
 

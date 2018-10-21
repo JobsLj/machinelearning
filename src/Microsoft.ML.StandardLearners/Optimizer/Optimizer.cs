@@ -645,7 +645,7 @@ namespace Microsoft.ML.Runtime.Numeric
                     double? improvement = null;
                     double x;
                     int end;
-                    if (message != null && DoubleParser.TryParse(out x, message, 0, message.Length, out end))
+                    if (message != null && DoubleParser.TryParse(message.AsMemory().Span, out x, out end))
                         improvement = x;
 
                     pch.Checkpoint(state.Value, improvement, state.Iter);
@@ -659,7 +659,6 @@ namespace Microsoft.ML.Runtime.Numeric
 
                 state.X.CopyTo(ref result);
                 optimum = state.Value;
-                ch.Done();
             }
         }
 

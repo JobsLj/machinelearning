@@ -4,6 +4,7 @@
 
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Runtime.RunTests;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -19,26 +20,19 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         [Fact]
         public void New_Evaluation()
         {
-            var dataPath = GetDataPath(SentimentDataPath);
-            var testDataPath = GetDataPath(SentimentTestPath);
+            var ml = new MLContext(seed: 1, conc: 1);
 
-            using (var env = new TlcEnvironment(seed: 1, conc: 1))
-            {
-                var reader = new TextLoader(env, MakeSentimentTextLoaderArgs());
+            // Pipeline.
+            var pipeline = ml.Data.TextReader(MakeSentimentTextLoaderArgs())
+                .Append(ml.Transforms.Text.FeaturizeText("SentimentText", "Features"))
+                .Append(ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: s => s.NumThreads = 1));
 
-                // Pipeline.
-                var pipeline = new TextLoader(env, MakeSentimentTextLoaderArgs())
-                    .Append(new TextTransform(env, "SentimentText", "Features"))
-                    .Append(new LinearClassificationTrainer(env, new LinearClassificationTrainer.Arguments { NumThreads = 1 }, "Features", "Label"));
+            // Train.
+            var readerModel = pipeline.Fit(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
 
-                // Train.
-                var readerModel = pipeline.Fit(new MultiFileSource(dataPath));
-
-                // Evaluate on the test set.
-                var dataEval = readerModel.Read(new MultiFileSource(testDataPath));
-                var evaluator = new MyBinaryClassifierEvaluator(env, new BinaryClassifierEvaluator.Arguments() { });
-                var metrics = evaluator.Evaluate(dataEval);
-            }
+            // Evaluate on the test set.
+            var dataEval = readerModel.Read(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.testFilename)));
+            var metrics = ml.BinaryClassification.Evaluate(dataEval);
         }
     }
 }

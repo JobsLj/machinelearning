@@ -7,6 +7,7 @@ using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.FastTree;
 using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Runtime.RunTests;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -14,23 +15,23 @@ namespace Microsoft.ML.Tests.Scenarios.Api
     public partial class ApiScenariosTests
     {
         /// <summary>
-        /// Meta-components: Meta-components (e.g., components that themselves instantiate components) should not be booby-trapped.
+        /// Meta-components: Meta-components (for example, components that themselves instantiate components) should not be booby-trapped.
         /// When specifying what trainer OVA should use, a user will be able to specify any binary classifier.
         /// If they specify a regression or multi-class classifier ideally that should be a compile error.
         /// </summary>
         [Fact]
         public void Metacomponents()
         {
-            var dataPath = GetDataPath(IrisDataPath);
-            using (var env = new TlcEnvironment())
+            using (var env = new LocalEnvironment())
             {
-                var loader = TextLoader.ReadFile(env, MakeIrisTextLoaderArgs(), new MultiFileSource(dataPath));
+                var loader = TextLoader.ReadFile(env, MakeIrisTextLoaderArgs(), new MultiFileSource(GetDataPath(TestDatasets.irisData.trainFilename)));
                 var term = TermTransform.Create(env, loader, "Label");
-                var concat = new ConcatTransform(env, term, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth");
+                var concat = new ConcatTransform(env, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth").Transform(term);
                 var trainer = new Ova(env, new Ova.Arguments
                 {
                     PredictorType = ComponentFactoryUtils.CreateFromFunction(
-                        e => new FastTreeBinaryClassificationTrainer(e, new FastTreeBinaryClassificationTrainer.Arguments()))
+                        e => new AveragedPerceptronTrainer(env, "Label", "Features", lossFunction: new SmoothedHingeLoss.Arguments())
+                    )
                 });
 
                 IDataView trainData = trainer.Info.WantCaching ? (IDataView)new CacheDataView(env, concat, prefetch: null) : concat;

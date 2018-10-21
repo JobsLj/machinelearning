@@ -1,12 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Data;
-using Microsoft.ML.Models;
+using Microsoft.ML.Legacy.Data;
+using Microsoft.ML.Legacy.Trainers;
+using Microsoft.ML.Legacy.Transforms;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Trainers;
-using Microsoft.ML.Transforms;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.PipelineApi
@@ -17,14 +16,14 @@ namespace Microsoft.ML.Tests.Scenarios.PipelineApi
         /// Start with a dataset in a text file. Run text featurization on text values. 
         /// Train a linear model over that. (I am thinking sentiment classification.) 
         /// Out of the result, produce some structure over which you can get predictions programmatically 
-        /// (e.g., the prediction does not happen over a file as it did during training).
+        /// (for example, the prediction does not happen over a file as it did during training).
         /// </summary>
         [Fact]
         void SimpleTrainAndPredict()
         {
             var dataPath = GetDataPath(SentimentDataPath);
             var testDataPath = GetDataPath(SentimentDataPath);
-            var pipeline = new LearningPipeline();
+            var pipeline = new Legacy.LearningPipeline();
 
             pipeline.Add(new TextLoader(dataPath).CreateFrom<SentimentData>());
 
@@ -42,9 +41,7 @@ namespace Microsoft.ML.Tests.Scenarios.PipelineApi
         {
             return new TextFeaturizer("Features", "SentimentText")
             {
-                KeepDiacritics = false,
                 KeepPunctuations = false,
-                TextCase = TextNormalizerTransformCaseNormalizationMode.Lower,
                 OutputTokens = true,
                 StopWordsRemover = new PredefinedStopWordsRemover(),
                 VectorNormalizer = TextTransformTextNormKind.L2,

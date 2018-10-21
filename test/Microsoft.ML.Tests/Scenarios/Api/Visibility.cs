@@ -1,8 +1,10 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
 using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Runtime.RunTests;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -11,7 +13,7 @@ namespace Microsoft.ML.Tests.Scenarios.Api
     {
         /// <summary>
         /// Visibility: It should, possibly through the debugger, be not such a pain to actually
-        /// see what is happening to your data when you apply this or that transform. E.g.: if I
+        /// see what is happening to your data when you apply this or that transform. For example, if I
         /// were to have the text "Help I'm a bug!" I should be able to see the steps where it is
         /// normalized to "help i'm a bug" then tokenized into ["help", "i'm", "a", "bug"] then
         /// mapped into term numbers [203, 25, 3, 511] then projected into the sparse
@@ -20,13 +22,10 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         [Fact]
         void Visibility()
         {
-            var dataPath = GetDataPath(SentimentDataPath);
-            var testDataPath = GetDataPath(SentimentTestPath);
-
-            using (var env = new TlcEnvironment(seed: 1, conc: 1))
+            using (var env = new LocalEnvironment(seed: 1, conc: 1))
             {
                 // Pipeline.
-                var loader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(dataPath));
+                var loader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
 
                 var trans = TextTransform.Create(env, MakeSentimentTextTransformArgs(false), loader);
                 
@@ -44,11 +43,11 @@ namespace Microsoft.ML.Tests.Scenarios.Api
                     Assert.True(cursor.Schema.TryGetColumnIndex("Features_TransformedText", out int transformedTextColumn));
                     Assert.True(cursor.Schema.TryGetColumnIndex("Features", out int featureColumn));
                     
-                    var originalTextGettter = cursor.GetGetter<DvText>(textColumn);
-                    var transformedTextGettter = cursor.GetGetter<VBuffer<DvText>>(transformedTextColumn);
+                    var originalTextGettter = cursor.GetGetter<ReadOnlyMemory<char>>(textColumn);
+                    var transformedTextGettter = cursor.GetGetter<VBuffer<ReadOnlyMemory<char>>>(transformedTextColumn);
                     var featureGettter = cursor.GetGetter<VBuffer<float>>(featureColumn);
-                    DvText text = default;
-                    VBuffer<DvText> transformedText = default;
+                    ReadOnlyMemory<char> text = default;
+                    VBuffer<ReadOnlyMemory<char>> transformedText = default;
                     VBuffer<float> features = default;
                     while (cursor.MoveNext())
                     {

@@ -23,7 +23,7 @@ using System.Threading;
     typeof(TermTransform.Arguments), typeof(SignatureDataTransform),
     TermTransform.UserName, "Term", "AutoLabel", "TermTransform", "AutoLabelTransform", DocName = "transform/TermTransform.md")]
 
-[assembly: LoadableClass(TermTransform.Summary, typeof(IDataView), typeof(TermTransform), null, typeof(SignatureLoadDataTransform),
+[assembly: LoadableClass(TermTransform.Summary, typeof(IDataTransform), typeof(TermTransform), null, typeof(SignatureLoadDataTransform),
     TermTransform.UserName, TermTransform.LoaderSignature)]
 
 [assembly: LoadableClass(TermTransform.Summary, typeof(TermTransform), null, typeof(SignatureLoadModel),
@@ -55,7 +55,7 @@ namespace Microsoft.ML.Runtime.Data
             public string[] Term;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "How items should be ordered when vectorized. By default, they will be in the order encountered. " +
-                "If by value items are sorted according to their default comparison, e.g., text sorting will be case sensitive (e.g., 'A' then 'Z' then 'a').")]
+                "If by value items are sorted according to their default comparison, for example, text sorting will be case sensitive (for example, 'A' then 'Z' then 'a').")]
             public SortOrder? Sort;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Whether key value metadata should be text, regardless of the actual input type", ShortName = "textkv", Hide = true)]
@@ -101,16 +101,10 @@ namespace Microsoft.ML.Runtime.Data
             // other things, like case insensitive (where appropriate), culturally aware, etc.?
         }
 
-        internal static class Defaults
-        {
-            public const int MaxNumTerms = 1000000;
-            public const SortOrder Sort = SortOrder.Occurrence;
-        }
-
         public abstract class ArgumentsBase : TransformInputBase
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "Maximum number of terms to keep per column when auto-training", ShortName = "max", SortOrder = 5)]
-            public int MaxNumTerms = Defaults.MaxNumTerms;
+            public int MaxNumTerms = TermEstimator.Defaults.MaxNumTerms;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Comma separated list of terms", SortOrder = 105, Visibility = ArgumentAttribute.VisibilityType.CmdLineOnly)]
             public string Terms;
@@ -133,8 +127,8 @@ namespace Microsoft.ML.Runtime.Data
 
             // REVIEW: Should we always sort? Opinions are mixed. See work item 7797429.
             [Argument(ArgumentType.AtMostOnce, HelpText = "How items should be ordered when vectorized. By default, they will be in the order encountered. " +
-                "If by value items are sorted according to their default comparison, e.g., text sorting will be case sensitive (e.g., 'A' then 'Z' then 'a').", SortOrder = 113)]
-            public SortOrder Sort = Defaults.Sort;
+                "If by value items are sorted according to their default comparison, for example, text sorting will be case sensitive (for example, 'A' then 'Z' then 'a').", SortOrder = 113)]
+            public SortOrder Sort = TermEstimator.Defaults.Sort;
 
             // REVIEW: Should we do this here, or correct the various pieces of code here and in MRS etc. that
             // assume key-values will be string? Once we correct these things perhaps we can see about removing it.
@@ -164,7 +158,7 @@ namespace Microsoft.ML.Runtime.Data
 
         public class ColumnInfo
         {
-            public ColumnInfo(string input, string output, int maxNumTerms = Defaults.MaxNumTerms, SortOrder sort = Defaults.Sort, string[] term = null, bool textKeyValues = false)
+            public ColumnInfo(string input, string output, int maxNumTerms = TermEstimator.Defaults.MaxNumTerms, SortOrder sort = TermEstimator.Defaults.Sort, string[] term = null, bool textKeyValues = false)
             {
                 Input = input;
                 Output = output;
@@ -181,12 +175,14 @@ namespace Microsoft.ML.Runtime.Data
             public readonly string[] Term;
             public readonly bool TextKeyValues;
 
-            internal string Terms { get; set; }
+            protected internal string Terms { get; set; }
         }
 
         public const string Summary = "Converts input values (words, numbers, etc.) to index in a dictionary.";
         public const string UserName = "Term Transform";
         public const string LoaderSignature = "TermTransform";
+
+        public const string FriendlyName = "To Key";
 
         private static VersionInfo GetVersionInfo()
         {
@@ -197,7 +193,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x00010003, // Generalize to multiple types beyond text
                 verReadableCur: 0x00010003,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(TermTransform).Assembly.FullName);
         }
 
         private const uint VerNonTextTypesSupported = 0x00010003;
@@ -228,7 +225,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x00010002, // Generalize to multiple types beyond text
                 verReadableCur: 0x00010002,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: TermManagerLoaderSignature);
+                loaderSignature: TermManagerLoaderSignature,
+                loaderAssemblyName: typeof(TermTransform).Assembly.FullName);
         }
 
         private readonly TermMap[] _unboundMaps;
@@ -270,7 +268,7 @@ namespace Microsoft.ML.Runtime.Data
             this(env, input, columns, null, null, null)
         { }
 
-        private TermTransform(IHostEnvironment env, IDataView input,
+        internal TermTransform(IHostEnvironment env, IDataView input,
             ColumnInfo[] columns,
             string file = null, string termsColumn = null,
             IComponentFactory<IMultiStreamSource, IDataLoader> loaderFactory = null)
@@ -286,7 +284,6 @@ namespace Microsoft.ML.Runtime.Data
                     _textMetadata[iinfo] = columns[iinfo].TextKeyValues;
                 }
                 ch.Assert(_unboundMaps.Length == columns.Length);
-                ch.Done();
             }
         }
 
@@ -317,20 +314,20 @@ namespace Microsoft.ML.Runtime.Data
                     if (!Enum.IsDefined(typeof(SortOrder), sortOrder))
                         throw env.ExceptUserArg(nameof(args.Sort), "Undefined sorting criteria '{0}' detected for column '{1}'", sortOrder, item.Name);
 
-                    cols[i] = new ColumnInfo(item.Source,
+                    cols[i] = new ColumnInfo(item.Source ?? item.Name,
                         item.Name,
                         item.MaxNumTerms ?? args.MaxNumTerms,
                         sortOrder,
                         item.Term,
                         item.TextKeyValues ?? args.TextKeyValues);
-                    cols[i].Terms = item.Terms;
+                    cols[i].Terms = item.Terms ?? args.Terms;
                 };
             }
             return new TermTransform(env, input, cols, args.DataFile, args.TermsColumn, args.Loader).MakeDataTransform(input);
         }
 
         // Factory method for SignatureLoadModel.
-        public static TermTransform Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static TermTransform Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(RegistrationName);
@@ -385,11 +382,11 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         // Factory method for SignatureLoadDataTransform.
-        public static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
             => Create(env, ctx).MakeDataTransform(input);
 
         // Factory method for SignatureLoadRowMapper.
-        public static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
         /// <summary>
@@ -401,10 +398,10 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="source">Name of the column to be transformed. If this is null '<paramref name="name"/>' will be used.</param>
         /// <param name="maxNumTerms">Maximum number of terms to keep per column when auto-training.</param>
         /// <param name="sort">How items should be ordered when vectorized. By default, they will be in the order encountered.
-        /// If by value items are sorted according to their default comparison, e.g., text sorting will be case sensitive (e.g., 'A' then 'Z' then 'a').</param>
+        /// If by value items are sorted according to their default comparison, for example, text sorting will be case sensitive (for example, 'A' then 'Z' then 'a').</param>
         public static IDataView Create(IHostEnvironment env,
             IDataView input, string name, string source = null,
-            int maxNumTerms = Defaults.MaxNumTerms, SortOrder sort = Defaults.Sort) =>
+            int maxNumTerms = TermEstimator.Defaults.MaxNumTerms, SortOrder sort = TermEstimator.Defaults.Sort) =>
             new TermTransform(env, input, new[] { new ColumnInfo(source ?? name, name, maxNumTerms, sort) }).MakeDataTransform(input);
 
         public static IDataTransform Create(IHostEnvironment env, ArgumentsBase args, ColumnBase[] column, IDataView input)
@@ -550,16 +547,16 @@ namespace Microsoft.ML.Runtime.Data
             for (int iinfo = 0; iinfo < infos.Length; iinfo++)
             {
                 // First check whether we have a terms argument, and handle it appropriately.
-                var terms = new DvText(columns[iinfo].Terms);
+                var terms = columns[iinfo].Terms.AsMemory();
                 var termsArray = columns[iinfo].Term;
 
-                terms = terms.Trim();
-                if (terms.HasChars || (termsArray != null && termsArray.Length > 0))
+                terms = ReadOnlyMemoryUtils.TrimSpaces(terms);
+                if (!terms.IsEmpty || (termsArray != null && termsArray.Length > 0))
                 {
                     // We have terms! Pass it in.
                     var sortOrder = columns[iinfo].Sort;
                     var bldr = Builder.Create(infos[iinfo].TypeSrc, sortOrder);
-                    if (terms.HasChars)
+                    if (!terms.IsEmpty)
                         bldr.ParseAddTermArg(ref terms, ch);
                     else
                         bldr.ParseAddTermArg(termsArray, ch);
@@ -708,14 +705,14 @@ namespace Microsoft.ML.Runtime.Data
                 });
         }
 
-        internal TermMap GetTermMap(int iinfo)
+        public TermMap GetTermMap(int iinfo)
         {
             Contracts.Assert(0 <= iinfo && iinfo < _unboundMaps.Length);
             return _unboundMaps[iinfo];
         }
 
         protected override IRowMapper MakeRowMapper(ISchema schema)
-          => new Mapper(this, schema);
+          => new Mapper(this, Schema.Create(schema));
 
         private sealed class Mapper : MapperBase, ISaveAsOnnx, ISaveAsPfa
         {
@@ -725,11 +722,11 @@ namespace Microsoft.ML.Runtime.Data
 
             private readonly BoundTermMap[] _termMap;
 
-            public bool CanSaveOnnx => true;
+            public bool CanSaveOnnx(OnnxContext ctx) => true;
 
             public bool CanSavePfa => true;
 
-            public Mapper(TermTransform parent, ISchema inputSchema)
+            public Mapper(TermTransform parent, Schema inputSchema)
                : base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
             {
                 _parent = parent;
@@ -753,34 +750,20 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
+            public override Schema.Column[] GetOutputColumns()
             {
-                var result = new RowMapperColumnInfo[_parent.ColumnPairs.Length];
+                var result = new Schema.Column[_parent.ColumnPairs.Length];
                 for (int i = 0; i < _parent.ColumnPairs.Length; i++)
                 {
                     InputSchema.TryGetColumnIndex(_parent.ColumnPairs[i].input, out int colIndex);
                     Host.Assert(colIndex >= 0);
-                    var colMetaInfo = new ColumnMetadataInfo(_parent.ColumnPairs[i].output);
-                    _termMap[i].AddMetadata(colMetaInfo);
+                    var builder = new Schema.Metadata.Builder();
+                    _termMap[i].AddMetadata(builder);
 
-                    foreach (var type in InputSchema.GetMetadataTypes(colIndex).Where(x => x.Key == MetadataUtils.Kinds.SlotNames))
-                        Utils.MarshalInvoke(AddMetaGetter<int>, type.Value.RawType, colMetaInfo, InputSchema, type.Key, type.Value, colIndex);
-                    result[i] = new RowMapperColumnInfo(_parent.ColumnPairs[i].output, _types[i], colMetaInfo);
+                    builder.Add(InputSchema[colIndex].Metadata, name => name == MetadataUtils.Kinds.SlotNames);
+                    result[i] = new Schema.Column(_parent.ColumnPairs[i].output, _types[i], builder.GetMetadata());
                 }
                 return result;
-            }
-
-            private int AddMetaGetter<T>(ColumnMetadataInfo colMetaInfo, ISchema schema, string kind, ColumnType ct, int originalCol)
-            {
-                MetadataUtils.MetadataGetter<T> getter = (int col, ref T dst) =>
-                {
-                    // We don't care about 'col': this getter is specialized for a column 'originalCol',
-                    // and 'col' in this case is the 'metadata kind index', not the column index.
-                    schema.GetMetadata<T>(kind, originalCol, ref dst);
-                };
-                var info = new MetadataInfo<T>(ct, getter);
-                colMetaInfo.Add(kind, info);
-                return 0;
             }
 
             protected override Delegate MakeGetter(IRow input, int iinfo, out Action disposer)
@@ -799,8 +782,8 @@ namespace Microsoft.ML.Runtime.Data
                 if (!info.TypeSrc.ItemType.IsText)
                     return false;
 
-                var terms = default(VBuffer<DvText>);
-                TermMap<DvText> map = (TermMap<DvText>)_termMap[iinfo].Map;
+                var terms = default(VBuffer<ReadOnlyMemory<char>>);
+                TermMap<ReadOnlyMemory<char>> map = (TermMap<ReadOnlyMemory<char>>)_termMap[iinfo].Map;
                 map.GetTerms(ref terms);
                 string opType = "LabelEncoder";
                 var node = ctx.CreateNode(opType, srcVariableName, dstVariableName, ctx.GetNodeName(opType));
@@ -874,8 +857,8 @@ namespace Microsoft.ML.Runtime.Data
 
                 if (!info.TypeSrc.ItemType.IsText)
                     return null;
-                var terms = default(VBuffer<DvText>);
-                TermMap<DvText> map = (TermMap<DvText>)_termMap[iinfo].Map;
+                var terms = default(VBuffer<ReadOnlyMemory<char>>);
+                TermMap<ReadOnlyMemory<char>> map = (TermMap<ReadOnlyMemory<char>>)_termMap[iinfo].Map;
                 map.GetTerms(ref terms);
                 var jsonMap = new JObject();
                 foreach (var kv in terms.Items())

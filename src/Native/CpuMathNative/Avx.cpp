@@ -16,7 +16,7 @@
 //
 // Other notes:
 // * AVX methods should end with _vleave() to avoid performance hit. See:
-//   http://stackoverflow.com/questions/7839925/using-avx-cpu-instructions-poor-performance-without-archavx.
+//   https://stackoverflow.com/questions/7839925/using-avx-cpu-instructions-poor-performance-without-archavx.
 // * Keep Avx.cpp in sync with Sse.cpp. Note that Avx.cpp is compiled with /arch:AVX, but Sse.cpp is not.
 
 // REVIEW: There is code below that mixes SSE and AVX instructions. Does compiling with /arch:AVX
@@ -389,46 +389,6 @@ EXPORT_API(void) MatMulTranX(bool add, _In_ const float * pmat, _In_ const float
         }
 
         pm += 3 * crow;
-    }
-
-    _vleave();
-}
-
-// Partial sparse source vector.
-EXPORT_API(void) MatMulTranPX(bool add, _In_ const float * pmat, _In_ const int * pposSrc, _In_ const float * psrc,
-    int posMin, int iposMin, int iposLim, _Inout_ float * pdst, int crow)
-{
-    const int * ppos = pposSrc + iposMin;
-    const int * pposLim = pposSrc + iposLim;
-    const float * pdLim = pdst + crow;
-
-    if (!add)
-    {
-        int col = *ppos++ - posMin;
-        const float * pm = pmat + col * crow;
-        __m256 x0 = _mm256_set1_ps(psrc[col]);
-        for (float * pd = pdst; pd < pdLim; pd += 8, pm += 8)
-        {
-            __m256 x1 = _mm256_load_ps(pm);
-            x1 = _mm256_mul_ps(x1, x0);
-            _mm256_store_ps(pd, x1);
-        }
-    }
-
-    // REVIEW: Should we explore unrolling the outer loop?
-    for (; ppos < pposLim; ppos++)
-    {
-        int col = *ppos - posMin;
-        __m256 x0 = _mm256_set1_ps(psrc[col]);
-        const float * pm = pmat + col * crow;
-        for (float * pd = pdst; pd < pdLim; pd += 8, pm += 8)
-        {
-            __m256 x1 = _mm256_load_ps(pm);
-            __m256 x2 = _mm256_load_ps(pd);
-            x1 = _mm256_mul_ps(x1, x0);
-            x2 = _mm256_add_ps(x2, x1);
-            _mm256_store_ps(pd, x2);
-        }
     }
 
     _vleave();

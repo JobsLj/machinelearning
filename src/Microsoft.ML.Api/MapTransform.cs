@@ -2,10 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
-using System.IO;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Internal.Utilities;
+using System;
+using System.IO;
 
 namespace Microsoft.ML.Runtime.Api
 {
@@ -24,10 +24,9 @@ namespace Microsoft.ML.Runtime.Api
         where TDst : class, new()
     {
         private const string RegistrationNameTemplate = "MapTransform<{0}, {1}>";
-
-        private readonly IDataView _source;
         private readonly Action<TSrc, TDst> _mapAction;
-        private readonly MergedSchema _schema;
+        private readonly InternalSchemaDefinition _addedSchema;
+        private readonly ColumnBindings _bindings;
 
         // Memorized input schema definition. Needed for re-apply.
         private readonly SchemaDefinition _inputSchemaDefinition;
@@ -56,12 +55,12 @@ namespace Microsoft.ML.Runtime.Api
             SchemaDefinition inputSchemaDefinition = null, SchemaDefinition outputSchemaDefinition = null)
             : base(env, RegistrationName, saveAction, loadFunc)
         {
-            Host.AssertValue(source, "source");
-            Host.AssertValue(mapAction, "mapAction");
+            Host.AssertValue(source);
+            Host.AssertValue(mapAction);
             Host.AssertValueOrNull(inputSchemaDefinition);
             Host.AssertValueOrNull(outputSchemaDefinition);
 
-            _source = source;
+            Source = source;
             _mapAction = mapAction;
             _inputSchemaDefinition = inputSchemaDefinition;
             _typedSource = TypedCursorable<TSrc>.Create(Host, Source, false, inputSchemaDefinition);
@@ -69,7 +68,8 @@ namespace Microsoft.ML.Runtime.Api
                ? InternalSchemaDefinition.Create(typeof(TDst), SchemaDefinition.Direction.Write)
                : InternalSchemaDefinition.Create(typeof(TDst), outputSchemaDefinition);
 
-            _schema = MergedSchema.Create(_source.Schema, outSchema);
+            _addedSchema = outSchema;
+            _bindings = new ColumnBindings(Data.Schema.Create(Source.Schema), DataViewConstructionUtils.GetSchemaColumns(outSchema));
         }
 
         /// <summary>
@@ -81,26 +81,21 @@ namespace Microsoft.ML.Runtime.Api
             Host.AssertValue(transform);
             Host.AssertValue(newSource);
 
-            _source = newSource;
+            Source = newSource;
             _mapAction = transform._mapAction;
             _typedSource = TypedCursorable<TSrc>.Create(Host, newSource, false, transform._inputSchemaDefinition);
 
-            _schema = MergedSchema.Create(newSource.Schema, transform._schema.AddedSchema);
+            _addedSchema = transform._addedSchema;
+            _bindings = new ColumnBindings(Data.Schema.Create(newSource.Schema), DataViewConstructionUtils.GetSchemaColumns(_addedSchema));
         }
 
-        public bool CanShuffle
-        {
-            get { return _source.CanShuffle; }
-        }
+        public bool CanShuffle => Source.CanShuffle;
 
-        public ISchema Schema
-        {
-            get { return _schema; }
-        }
+        public Schema Schema => _bindings.Schema;
 
         public long? GetRowCount(bool lazy = true)
         {
-            return _source.GetRowCount(lazy);
+            return Source.GetRowCount(lazy);
         }
 
         public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
@@ -112,7 +107,7 @@ namespace Microsoft.ML.Runtime.Api
             if (DataViewUtils.TryCreateConsolidatingCursor(out curs, this, predicate, Host, rand))
                 return curs;
 
-            var activeInputs = _schema.GetActiveInput(predicate);
+            var activeInputs = _bindings.GetActiveInput(predicate);
             Func<int, bool> srcPredicate = c => activeInputs[c];
 
             var input = _typedSource.GetCursor(srcPredicate, rand == null ? (int?)null : rand.Next());
@@ -124,7 +119,7 @@ namespace Microsoft.ML.Runtime.Api
             Host.CheckValue(predicate, nameof(predicate));
             Host.CheckValueOrNull(rand);
 
-            var activeInputs = _schema.GetActiveInput(predicate);
+            var activeInputs = _bindings.GetActiveInput(predicate);
             Func<int, bool> srcPredicate = c => activeInputs[c];
 
             var inputs = _typedSource.GetCursorSet(out consolidator, srcPredicate, n, rand);
@@ -136,10 +131,7 @@ namespace Microsoft.ML.Runtime.Api
             return cursors;
         }
 
-        public IDataView Source
-        {
-            get { return _source; }
-        }
+        public IDataView Source { get; }
 
         public IDataTransform ApplyToData(IHostEnvironment env, IDataView newSource)
         {
@@ -151,7 +143,7 @@ namespace Microsoft.ML.Runtime.Api
         public Func<int, bool> GetDependencies(Func<int, bool> predicate)
         {
             Host.CheckValue(predicate, nameof(predicate));
-            var activeInput = _schema.GetActiveInput(predicate);
+            var activeInput = _bindings.GetActiveInput(predicate);
             Func<int, bool> srcPredicate =
                 c =>
                 {
@@ -161,11 +153,13 @@ namespace Microsoft.ML.Runtime.Api
             return _typedSource.GetDependencies(srcPredicate);
         }
 
+        Schema IRowToRowMapper.InputSchema => Source.Schema;
+
         public IRow GetRow(IRow input, Func<int, bool> active, out Action disposer)
         {
             Host.CheckValue(input, nameof(input));
             Host.CheckValue(active, nameof(active));
-            Host.CheckParam(input.Schema == _source.Schema, nameof(input), "Schema of input row must be the same as the schema the mapper is bound to");
+            Host.CheckParam(input.Schema == Source.Schema, nameof(input), "Schema of input row must be the same as the schema the mapper is bound to");
 
             var src = new TSrc();
             var dst = new TDst();
@@ -190,9 +184,9 @@ namespace Microsoft.ML.Runtime.Api
             // REVIEW: This is quite odd (for a cursor to create an IDataView). Consider cleaning up your
             // programming model for this. Note that you don't use the IDataView, only a cursor around a single row that
             // is owned by this cursor. Seems like that cursor implementation could be decoupled from any IDataView class.
-            var appendedDataView = new DataViewConstructionUtils.SingleRowLoopDataView<TDst>(Host, _schema.AddedSchema);
+            var appendedDataView = new DataViewConstructionUtils.SingleRowLoopDataView<TDst>(Host, _addedSchema);
             appendedDataView.SetCurrentRowObject(dst);
-            return appendedDataView.GetRowCursor(i => active(_schema.MapIinfoToCol(i)));
+            return appendedDataView.GetRowCursor(i => active(_bindings.AddedColumnIndices[i]));
         }
 
         private sealed class Cursor : SynchronizedCursorBase<IRowCursor<TSrc>>, IRowCursor
@@ -219,7 +213,7 @@ namespace Microsoft.ML.Runtime.Api
                 CursorChannelAttribute.TrySetCursorChannel(host, _dst, Ch);
             }
 
-            public ISchema Schema => _row.Schema;
+            public Schema Schema => _row.Schema;
 
             public bool IsColumnActive(int col)
             {
@@ -232,7 +226,7 @@ namespace Microsoft.ML.Runtime.Api
                     () =>
                     {
                         if (!IsGood)
-                            throw Contracts.Except("Getter is called when the cursor is {0}, which is not allowed.", Input.State);
+                            throw Ch.Except("Getter is called when the cursor is {0}, which is not allowed.", Input.State);
                     };
                 return _row.GetGetterCore<TValue>(col, isGood);
             }
@@ -251,8 +245,7 @@ namespace Microsoft.ML.Runtime.Api
 
         private sealed class Row : IRow
         {
-            private readonly ISchema _schema;
-            private readonly IRow<TSrc> _input;
+            private readonly IRowReadableAs<TSrc> _input;
             private readonly IRow _appendedRow;
             private readonly bool[] _active;
 
@@ -267,15 +260,15 @@ namespace Microsoft.ML.Runtime.Api
 
             public long Position => _input.Position;
 
-            public ISchema Schema => _schema;
+            public Schema Schema { get; }
 
-            public Row(IRow<TSrc> input, MapTransform<TSrc, TDst> parent, Func<int, bool> active, TSrc src, TDst dst)
+            public Row(IRowReadableAs<TSrc> input, MapTransform<TSrc, TDst> parent, Func<int, bool> active, TSrc src, TDst dst)
             {
                 _input = input;
                 _parent = parent;
-                _schema = parent.Schema;
+                Schema = parent.Schema;
 
-                _active = Utils.BuildArray(_schema.ColumnCount, active);
+                _active = Utils.BuildArray(Schema.ColumnCount, active);
                 _src = src;
                 _dst = dst;
 
@@ -291,7 +284,7 @@ namespace Microsoft.ML.Runtime.Api
             public ValueGetter<TValue> GetGetterCore<TValue>(int col, Action checkIsGood)
             {
                 bool isSrc;
-                int index = _parent._schema.MapColumnIndex(out isSrc, col);
+                int index = _parent._bindings.MapColumnIndex(out isSrc, col);
                 if (isSrc)
                     return _input.GetGetter<TValue>(index);
 
@@ -319,7 +312,7 @@ namespace Microsoft.ML.Runtime.Api
 
             public bool IsColumnActive(int col)
             {
-                _parent.Host.Check(0 <= col && col < _schema.ColumnCount);
+                _parent.Host.Check(0 <= col && col < Schema.ColumnCount);
                 return _active[col];
             }
         }

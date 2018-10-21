@@ -6,8 +6,6 @@ using System.Globalization;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.Command;
 using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Tools;
 
 [assembly: LoadableClass(ChainCommand.Summary, typeof(ChainCommand), typeof(ChainCommand.Arguments), typeof(SignatureCommand),
@@ -67,8 +65,6 @@ namespace Microsoft.ML.Runtime.Tools
                             count++;
 
                             chCmd.Info(" ");
-
-                            chCmd.Done();
                         }
                     }
                 }
@@ -77,8 +73,6 @@ namespace Microsoft.ML.Runtime.Tools
                 ch.Info("=====================================================================================");
                 ch.Info("Executed {0} commands in {1}", count, sw.Elapsed);
                 ch.Info("=====================================================================================");
-
-                ch.Done();
             }
         }
     }

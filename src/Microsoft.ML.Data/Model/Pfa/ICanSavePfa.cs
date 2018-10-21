@@ -13,7 +13,7 @@ namespace Microsoft.ML.Runtime.Model.Pfa
         /// Whether this object really is capable of saving itself as part of a PFA
         /// pipeline. An implementor of this object might implement this interface,
         /// but still return <c>false</c> if there is some characteristic of this object
-        /// only detectable during runtime that would prevent its being savable. (E.g.,
+        /// only detectable during runtime that would prevent its being savable. (For example,
         /// it may wrap some other object that may or may not be savable.)
         /// </summary>
         bool CanSavePfa { get; }
@@ -35,7 +35,7 @@ namespace Microsoft.ML.Runtime.Model.Pfa
     }
 
     /// <summary>
-    /// This data model component is savable as PFA. See http://dmg.org/pfa/ .
+    /// This data model component is savable as PFA. See https://dmg.org/pfa/ .
     /// </summary>
     public interface ITransformCanSavePfa : ISaveAsPfa, IDataTransform
     {

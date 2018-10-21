@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Internallearn;
 using Microsoft.ML.Runtime.Internal.Utilities;
 
@@ -54,7 +53,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Name column name", ShortName = "name", Purpose = SpecialPurpose.ColumnName)]
             public string NameColumn = DefaultColumnNames.Name;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'")]
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'")]
             public KeyValuePair<string, string>[] CustomColumn;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Normalize option for the feature column", ShortName = "norm")]
@@ -106,7 +105,6 @@ namespace Microsoft.ML.Runtime.Data
 
                 var dsArgs = new DropSlotsTransform.Arguments();
                 dsArgs.Column = new[] { column };
-                ch.Done();
                 return new DropSlotsTransform(host, dsArgs, input);
             }
         }
@@ -310,7 +308,6 @@ namespace Microsoft.ML.Runtime.Data
                 var rfs = predictor as IPredictorWithFeatureWeights<Single>;
                 Contracts.AssertValue(rfs);
                 rfs.GetFeatureWeights(ref scores);
-                ch.Done();
             }
         }
 

@@ -11,9 +11,9 @@ using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.Command;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Calibration;
 using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Transforms;
 
 [assembly: LoadableClass(typeof(CrossValidationCommand), typeof(CrossValidationCommand.Arguments), typeof(SignatureCommand),
     "Cross Validation", CrossValidationCommand.LoadName)]
@@ -55,7 +55,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Column to use for stratification", ShortName = "strat", SortOrder = 7)]
             public string StratificationColumn;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
             public KeyValuePair<string, string>[] CustomColumn;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Number of folds in k-fold cross-validation", ShortName = "k")]
@@ -119,7 +119,7 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = Host.Start(LoadName))
             using (var server = InitServer(ch))
             {
-                var settings = CmdParser.GetSettings(ch, Args, new Arguments());
+                var settings = CmdParser.GetSettings(Host, Args, new Arguments());
                 string cmd = string.Format("maml.exe {0} {1}", LoadName, settings);
                 ch.Info(cmd);
 
@@ -129,8 +129,6 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     RunCore(ch, cmd);
                 }
-
-                ch.Done();
             }
         }
 
@@ -330,10 +328,7 @@ namespace Microsoft.ML.Runtime.Data
                     int inc = 0;
                     while (input.Schema.TryGetColumnIndex(stratificationColumn, out tmp))
                         stratificationColumn = string.Format("{0}_{1:000}", origStratCol, ++inc);
-                    var hashargs = new HashTransform.Arguments();
-                    hashargs.Column = new[] { new HashTransform.Column { Source = origStratCol, Name = stratificationColumn } };
-                    hashargs.HashBits = 30;
-                    output = new HashTransform(Host, hashargs, input);
+                    output = new HashEstimator(Host, origStratCol, stratificationColumn, 30).Fit(input).Transform(input);
                 }
             }
 
@@ -361,11 +356,11 @@ namespace Microsoft.ML.Runtime.Data
             public struct FoldResult
             {
                 public readonly Dictionary<string, IDataView> Metrics;
-                public readonly ISchema ScoreSchema;
+                public readonly Schema ScoreSchema;
                 public readonly RoleMappedData PerInstanceResults;
                 public readonly RoleMappedSchema TrainSchema;
 
-                public FoldResult(Dictionary<string, IDataView> metrics, ISchema scoreSchema, RoleMappedData perInstance, RoleMappedSchema trainSchema)
+                public FoldResult(Dictionary<string, IDataView> metrics, Schema scoreSchema, RoleMappedData perInstance, RoleMappedSchema trainSchema)
                 {
                     Metrics = metrics;
                     ScoreSchema = scoreSchema;
@@ -560,7 +555,7 @@ namespace Microsoft.ML.Runtime.Data
                     var bindable = ScoreUtils.GetSchemaBindableMapper(host, predictor, scorerFactorySettings: _scorer as ICommandLineComponentFactory);
                     ch.AssertValue(bindable);
                     var mapper = bindable.Bind(host, testData.Schema);
-                    var scorerComp = _scorer ?? ScoreUtils.GetScorerComponent(mapper);
+                    var scorerComp = _scorer ?? ScoreUtils.GetScorerComponent(host, mapper);
                     IDataScorerTransform scorePipe = scorerComp.CreateComponent(host, testData.Data, mapper, trainData.Schema);
 
                     // Save per-fold model.
@@ -592,7 +587,6 @@ namespace Microsoft.ML.Runtime.Data
                         var perInst = eval.GetPerInstanceMetrics(dataEval);
                         perInstance = new RoleMappedData(perInst, dataEval.Schema.GetColumnRoleNames(), opt: true);
                     }
-                    ch.Done();
                     return new FoldResult(dict, dataEval.Schema.Schema, perInstance, trainData.Schema);
                 }
             }

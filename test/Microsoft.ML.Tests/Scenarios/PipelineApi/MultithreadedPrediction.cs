@@ -1,14 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Data;
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Trainers;
-using Microsoft.ML.Transforms;
+using Microsoft.ML.Legacy.Data;
+using Microsoft.ML.Legacy.Trainers;
+using Microsoft.ML.Legacy.Transforms;
 using System.Collections.Generic;
-using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -22,7 +19,7 @@ namespace Microsoft.ML.Tests.Scenarios.PipelineApi
         /// reallocate internal memory buffers on every single prediction, the PredictionEngine
         /// (or its estimator/transformer based successor) is, like most stateful .NET objects,
         /// fundamentally not thread safe. This is deliberate and as designed. However, some mechanism
-        /// to enable multi-threaded scenarios (e.g., a web server servicing requests) should be possible
+        /// to enable multi-threaded scenarios (for example, a web server servicing requests) should be possible
         /// and performant in the new API.
         /// </summary>
         [Fact]
@@ -30,7 +27,7 @@ namespace Microsoft.ML.Tests.Scenarios.PipelineApi
         {
             var dataPath = GetDataPath(SentimentDataPath);
             var testDataPath = GetDataPath(SentimentDataPath);
-            var pipeline = new LearningPipeline();
+            var pipeline = new Legacy.LearningPipeline();
 
             pipeline.Add(new TextLoader(dataPath).CreateFrom<SentimentData>());
 

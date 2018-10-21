@@ -65,7 +65,8 @@ namespace Microsoft.ML.Runtime.Data
                  verWrittenCur: 0x00010001, // Initial
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(GroupTransform).Assembly.FullName);
         }
 
         // REVIEW: maybe we want to have an option to keep all non-group scalar columns, as opposed to
@@ -86,7 +87,7 @@ namespace Microsoft.ML.Runtime.Data
             public string[] Column;
         }
 
-        private readonly GroupSchema _schema;
+        private readonly GroupSchema _groupSchema;
 
         /// <summary>
         /// Convenience constructor for public facing API.
@@ -106,7 +107,7 @@ namespace Microsoft.ML.Runtime.Data
             Host.CheckValue(args, nameof(args));
             Host.CheckUserArg(Utils.Size(args.GroupKey) > 0, nameof(args.GroupKey), "There must be at least one group key");
 
-            _schema = new GroupSchema(Host, Source.Schema, args.GroupKey, args.Column ?? new string[0]);
+            _groupSchema = new GroupSchema(Host, Source.Schema, args.GroupKey, args.Column ?? new string[0]);
         }
 
         public static GroupTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
@@ -126,7 +127,7 @@ namespace Microsoft.ML.Runtime.Data
 
             // *** Binary format ***
             // (schema)
-            _schema = new GroupSchema(input.Schema, host, ctx);
+            _groupSchema = new GroupSchema(input.Schema, host, ctx);
         }
 
         public override void Save(ModelSaveContext ctx)
@@ -137,7 +138,7 @@ namespace Microsoft.ML.Runtime.Data
 
             // *** Binary format ***
             // (schema)
-            _schema.Save(ctx);
+            _groupSchema.Save(ctx);
         }
 
         public override long? GetRowCount(bool lazy = true)
@@ -146,7 +147,7 @@ namespace Microsoft.ML.Runtime.Data
             return null;
         }
 
-        public override ISchema Schema { get { return _schema; } }
+        public override Schema Schema => _groupSchema.AsSchema;
 
         protected override IRowCursor GetRowCursorCore(Func<int, bool> predicate, IRandom rand = null)
         {
@@ -200,6 +201,8 @@ namespace Microsoft.ML.Runtime.Data
 
             private readonly Dictionary<string, int> _columnNameMap;
 
+            public Schema AsSchema { get; }
+
             public GroupSchema(IExceptionContext ectx, ISchema inputSchema, string[] groupColumns, string[] keepColumns)
             {
                 Contracts.AssertValue(ectx);
@@ -218,6 +221,8 @@ namespace Microsoft.ML.Runtime.Data
 
                 _columnTypes = BuildColumnTypes(_input, KeepIds);
                 _columnNameMap = BuildColumnNameMap();
+
+                AsSchema = Schema.Create(this);
             }
 
             public GroupSchema(ISchema inputSchema, IHostEnvironment env, ModelLoadContext ctx)
@@ -253,6 +258,8 @@ namespace Microsoft.ML.Runtime.Data
 
                 _columnTypes = BuildColumnTypes(_input, KeepIds);
                 _columnNameMap = BuildColumnNameMap();
+
+                AsSchema = Schema.Create(this);
             }
 
             private Dictionary<string, int> BuildColumnNameMap()
@@ -426,7 +433,6 @@ namespace Microsoft.ML.Runtime.Data
                 public readonly Func<bool> IsSameKey;
 
                 private static Func<bool> MakeSameChecker<T>(IRow row, int col)
-                    where T : IEquatable<T>
                 {
                     T oldValue = default(T);
                     T newValue = default(T);
@@ -436,7 +442,16 @@ namespace Microsoft.ML.Runtime.Data
                         () =>
                         {
                             getter(ref newValue);
-                            bool result = first || oldValue.Equals(newValue);
+                            bool result;
+
+                            if ((typeof(IEquatable<T>).IsAssignableFrom(typeof(T))))
+                                result = oldValue.Equals(newValue);
+                            else if ((typeof(ReadOnlyMemory<char>).IsAssignableFrom(typeof(T))))
+                                result = ((ReadOnlyMemory<char>)(object)oldValue).Span.SequenceEqual(((ReadOnlyMemory<char>)(object)newValue).Span);
+                            else
+                                Contracts.Check(result = false, "Invalid type.");
+
+                            result = result || first;
                             oldValue = newValue;
                             first = false;
                             return result;
@@ -532,7 +547,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public override long Batch { get { return 0; } }
 
-            public ISchema Schema { get { return _parent.Schema; } }
+            public Schema Schema => _parent.Schema;
 
             public Cursor(GroupTransform parent, Func<int, bool> predicate)
                 : base(parent.Host)
@@ -540,7 +555,7 @@ namespace Microsoft.ML.Runtime.Data
                 Ch.AssertValue(predicate);
 
                 _parent = parent;
-                var schema = _parent._schema;
+                var schema = _parent._groupSchema;
                 _active = Utils.BuildArray(schema.ColumnCount, predicate);
                 _groupCount = schema.GroupIds.Length;
 
@@ -564,13 +579,13 @@ namespace Microsoft.ML.Runtime.Data
 
                 _groupCheckers = new GroupKeyColumnChecker[_groupCount];
                 for (int i = 0; i < _groupCount; i++)
-                    _groupCheckers[i] = new GroupKeyColumnChecker(_leadingCursor, _parent._schema.GroupIds[i]);
+                    _groupCheckers[i] = new GroupKeyColumnChecker(_leadingCursor, _parent._groupSchema.GroupIds[i]);
 
-                _aggregators = new KeepColumnAggregator[_parent._schema.KeepIds.Length];
+                _aggregators = new KeepColumnAggregator[_parent._groupSchema.KeepIds.Length];
                 for (int i = 0; i < _aggregators.Length; i++)
                 {
                     if (_active[i + _groupCount])
-                        _aggregators[i] = KeepColumnAggregator.Create(_trailingCursor, _parent._schema.KeepIds[i]);
+                        _aggregators[i] = KeepColumnAggregator.Create(_trailingCursor, _parent._groupSchema.KeepIds[i]);
                 }
             }
 
@@ -581,7 +596,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public bool IsColumnActive(int col)
             {
-                _parent._schema.CheckColumnInRange(col);
+                _parent._groupSchema.CheckColumnInRange(col);
                 return _active[col];
             }
 
@@ -649,12 +664,12 @@ namespace Microsoft.ML.Runtime.Data
 
             public ValueGetter<TValue> GetGetter<TValue>(int col)
             {
-                _parent._schema.CheckColumnInRange(col);
+                _parent._groupSchema.CheckColumnInRange(col);
                 if (!_active[col])
                     throw Ch.ExceptParam(nameof(col), "Column #{0} is not active", col);
 
                 if (col < _groupCount)
-                    return _trailingCursor.GetGetter<TValue>(_parent._schema.GroupIds[col]);
+                    return _trailingCursor.GetGetter<TValue>(_parent._groupSchema.GroupIds[col]);
 
                 Ch.AssertValue(_aggregators[col - _groupCount]);
                 return _aggregators[col - _groupCount].GetGetter<TValue>(Ch);

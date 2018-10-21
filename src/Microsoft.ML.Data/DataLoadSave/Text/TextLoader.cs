@@ -11,7 +11,6 @@ using System.Text;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
 using Microsoft.ML.Core.Data;
@@ -46,6 +45,11 @@ namespace Microsoft.ML.Runtime.Data
 
             public Column(string name, DataKind? type, int index)
                : this(name, type, new[] { new Range(index) }) { }
+
+            public Column(string name, DataKind? type, int minIndex, int maxIndex)
+                : this(name, type, new[] { new Range(minIndex, maxIndex) })
+            {
+            }
 
             public Column(string name, DataKind? type, Range[] source, KeyRange keyRange = null)
             {
@@ -512,12 +516,14 @@ namespace Microsoft.ML.Runtime.Data
         {
             public readonly ColInfo[] Infos;
             public readonly Dictionary<string, int> NameToInfoIndex;
-            private readonly VBuffer<DvText>[] _slotNames;
+            private readonly VBuffer<ReadOnlyMemory<char>>[] _slotNames;
             // Empty iff either header+ not set in args, or if no header present, or upon load
             // there was no header stored in the model.
-            private readonly DvText _header;
+            private readonly ReadOnlyMemory<char> _header;
 
-            private readonly MetadataUtils.MetadataGetter<VBuffer<DvText>> _getSlotNames;
+            private readonly MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> _getSlotNames;
+
+            public Schema AsSchema { get; }
 
             private Bindings()
             {
@@ -547,7 +553,7 @@ namespace Microsoft.ML.Runtime.Data
 
                     int inputSize = parent._inputSize;
                     ch.Assert(0 <= inputSize & inputSize < SrcLim);
-                    List<DvText> lines = null;
+                    List<ReadOnlyMemory<char>> lines = null;
                     if (headerFile != null)
                         Cursor.GetSomeLines(headerFile, 1, ref lines);
                     if (needInputSize && inputSize == 0)
@@ -713,15 +719,14 @@ namespace Microsoft.ML.Runtime.Data
                         Infos[iinfoOther] = ColInfo.Create(cols[iinfoOther].Name.Trim(), typeOther, segsNew.ToArray(), true);
                     }
 
-                    _slotNames = new VBuffer<DvText>[Infos.Length];
+                    _slotNames = new VBuffer<ReadOnlyMemory<char>>[Infos.Length];
                     if ((parent.HasHeader || headerFile != null) && Utils.Size(lines) > 0)
                         _header = lines[0];
 
-                    if (_header.HasChars)
+                    if (!_header.IsEmpty)
                         Parser.ParseSlotNames(parent, _header, Infos, _slotNames);
-
-                    ch.Done();
                 }
+                AsSchema = Schema.Create(this);
             }
 
             public Bindings(ModelLoadContext ctx, TextLoader parent)
@@ -798,12 +803,14 @@ namespace Microsoft.ML.Runtime.Data
                     NameToInfoIndex[name] = iinfo;
                 }
 
-                _slotNames = new VBuffer<DvText>[Infos.Length];
+                _slotNames = new VBuffer<ReadOnlyMemory<char>>[Infos.Length];
 
                 string result = null;
                 ctx.TryLoadTextStream("Header.txt", reader => result = reader.ReadLine());
                 if (!string.IsNullOrEmpty(result))
-                    Parser.ParseSlotNames(parent, _header = new DvText(result), Infos, _slotNames);
+                    Parser.ParseSlotNames(parent, _header = result.AsMemory(), Infos, _slotNames);
+
+                AsSchema = Schema.Create(this);
             }
 
             public void Save(ModelSaveContext ctx)
@@ -851,7 +858,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
 
                 // Save header in an easily human inspectable separate entry.
-                if (_header.HasChars)
+                if (!_header.IsEmpty)
                     ctx.SaveTextStream("Header.txt", writer => writer.WriteLine(_header.ToString()));
             }
 
@@ -925,7 +932,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            private void GetSlotNames(int col, ref VBuffer<DvText> dst)
+            private void GetSlotNames(int col, ref VBuffer<ReadOnlyMemory<char>> dst)
             {
                 Contracts.Assert(0 <= col && col < ColumnCount);
 
@@ -961,7 +968,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x0001000B, // Header now retained if used and present
                 verReadableCur: 0x0001000A,
                 verWeCanReadBack: 0x00010009,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(TextLoader).Assembly.FullName);
         }
 
         /// <summary>
@@ -999,6 +1007,18 @@ namespace Microsoft.ML.Runtime.Data
 
         private readonly IHost _host;
         private const string RegistrationName = "TextLoader";
+
+        public TextLoader(IHostEnvironment env, Column[] columns, Action<Arguments> advancedSettings, IMultiStreamSource dataSample = null)
+            : this(env, MakeArgs(columns, advancedSettings), dataSample)
+        {
+        }
+
+        private static Arguments MakeArgs(Column[] columns, Action<Arguments> advancedSettings)
+        {
+            var result = new Arguments { Column = columns };
+            advancedSettings?.Invoke(result);
+            return result;
+        }
 
         public TextLoader(IHostEnvironment env, Arguments args, IMultiStreamSource dataSample = null)
         {
@@ -1181,13 +1201,13 @@ namespace Microsoft.ML.Runtime.Data
                     goto LDone;
 
                 // Make sure the loader binds to us.
-                var info = ComponentCatalog.GetLoadableClassInfo<SignatureDataLoader>(loader.Name);
+                var info = host.ComponentCatalog.GetLoadableClassInfo<SignatureDataLoader>(loader.Name);
                 if (info.Type != typeof(IDataLoader) || info.ArgType != typeof(Arguments))
                     goto LDone;
 
                 var argsNew = new Arguments();
                 // Copy the non-core arguments to the new args (we already know that all the core arguments are default).
-                var parsed = CmdParser.ParseArguments(host, CmdParser.GetSettings(ch, args, new Arguments()), argsNew);
+                var parsed = CmdParser.ParseArguments(host, CmdParser.GetSettings(host, args, new Arguments()), argsNew);
                 ch.Assert(parsed);
                 // Copy the core arguments to the new args.
                 if (!CmdParser.ParseArguments(host, loader.GetSettingsString(), argsNew, typeof(ArgumentsCore), msg => ch.Error(msg)))
@@ -1201,7 +1221,6 @@ namespace Microsoft.ML.Runtime.Data
                 args = argsNew;
 
             LDone:
-                ch.Done();
                 return !error;
             }
         }
@@ -1314,9 +1333,11 @@ namespace Microsoft.ML.Runtime.Data
             _bindings.Save(ctx);
         }
 
-        public ISchema GetOutputSchema() => _bindings;
+        public Schema GetOutputSchema() => _bindings.AsSchema;
 
         public IDataView Read(IMultiStreamSource source) => new BoundLoader(this, source);
+
+        public IDataView Read(string path) => Read(new MultiFileSource(path));
 
         private sealed class BoundLoader : IDataLoader
         {
@@ -1341,7 +1362,7 @@ namespace Microsoft.ML.Runtime.Data
             // REVIEW: Should we try to support shuffling?
             public bool CanShuffle => false;
 
-            public ISchema Schema => _reader._bindings;
+            public Schema Schema => _reader._bindings.AsSchema;
 
             public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
             {

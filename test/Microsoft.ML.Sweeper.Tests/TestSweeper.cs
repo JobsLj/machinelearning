@@ -6,6 +6,7 @@ using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.EntryPoints;
+using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.RunTests;
 using Microsoft.ML.Runtime.Sweeper;
 using Microsoft.ML.Runtime.Sweeper.Algorithms;
@@ -93,7 +94,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         [Fact]
         public void TestRandomSweeper()
         {
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 var args = new SweeperBase.ArgumentsBase()
                 {
@@ -135,7 +136,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public void TestSimpleSweeperAsync()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 int sweeps = 100;
                 var sweeper = new SimpleAsyncSweeper(env, new SweeperBase.ArgumentsBase
@@ -185,7 +186,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public void TestDeterministicSweeperAsyncCancellation()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 var args = new DeterministicSweeperAsync.Arguments();
                 args.BatchSize = 5;
@@ -237,7 +238,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public void TestDeterministicSweeperAsync()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 var args = new DeterministicSweeperAsync.Arguments();
                 args.BatchSize = 5;
@@ -308,7 +309,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public void TestDeterministicSweeperAsyncParallel()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 int batchSize = 5;
                 int sweeps = 20;
@@ -362,7 +363,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public async Task TestNelderMeadSweeperAsync()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 int batchSize = 5;
                 int sweeps = 40;
@@ -441,7 +442,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         [Fact]
         public void TestRandomGridSweeper()
         {
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 var args = new RandomGridSweeper.Arguments()
                 {
@@ -553,7 +554,7 @@ namespace Microsoft.ML.Sweeper.RunTests
         public void TestNelderMeadSweeper()
         {
             var random = new Random(42);
-            using (var env = new TlcEnvironment(42))
+            using (var env = new ConsoleEnvironment(42))
             {
                 var param = new IComponentFactory<INumericValueGenerator>[] {
                     ComponentFactoryUtils.CreateFromFunction(
@@ -607,12 +608,62 @@ namespace Microsoft.ML.Sweeper.RunTests
         }
 
         [Fact]
+        public void TestNelderMeadSweeperWithDefaultFirstBatchSweeper()
+        {
+            var random = new Random(42);
+            using (var env = new ConsoleEnvironment(42))
+            {
+                var param = new IComponentFactory<INumericValueGenerator>[] {
+                    ComponentFactoryUtils.CreateFromFunction(
+                        environ => new FloatValueGenerator(new FloatParamArguments() { Name = "foo", Min = 1, Max = 5})),
+                    ComponentFactoryUtils.CreateFromFunction(
+                        environ => new LongValueGenerator(new LongParamArguments() { Name = "bar", Min = 1, Max = 1000, LogBase = true }))
+                };
+
+                var args = new NelderMeadSweeper.Arguments();
+                args.SweptParameters = param;
+                var sweeper = new NelderMeadSweeper(env, args);
+                var sweeps = sweeper.ProposeSweeps(5, new List<RunResult>());
+                Assert.Equal(3, sweeps.Length);
+
+                var results = new List<IRunResult>();
+                for (int i = 1; i < 10; i++)
+                {
+                    foreach (var parameterSet in sweeps)
+                    {
+                        foreach (var parameterValue in parameterSet)
+                        {
+                            if (parameterValue.Name == "foo")
+                            {
+                                var val = float.Parse(parameterValue.ValueText, CultureInfo.InvariantCulture);
+                                Assert.InRange(val, 1, 5);
+                            }
+                            else if (parameterValue.Name == "bar")
+                            {
+                                var val = long.Parse(parameterValue.ValueText);
+                                Assert.InRange(val, 1, 1000);
+                            }
+                            else
+                            {
+                                Assert.True(false, "Wrong parameter");
+                            }
+                        }
+                        results.Add(new RunResult(parameterSet, random.NextDouble(), true));
+                    }
+
+                    sweeps = sweeper.ProposeSweeps(5, results);
+                }
+                Assert.True(Utils.Size(sweeps) <= 5);
+            }
+        }
+
+        [Fact]
         public void TestSmacSweeper()
         {
             RunMTAThread(() =>
             {
                 var random = new Random(42);
-                using (var env = new TlcEnvironment(42))
+                using (var env = new ConsoleEnvironment(42))
                 {
                     int maxInitSweeps = 5;
                     var args = new SmacSweeper.Arguments()

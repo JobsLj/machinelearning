@@ -2,12 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Data.StaticPipe;
+using Microsoft.ML.StaticPipe;
 using Microsoft.ML.Runtime.Api;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Model;
 using Microsoft.ML.Runtime.RunTests;
 using Microsoft.ML.Runtime.Tools;
+using System;
 using System.IO;
 using System.Linq;
 using Xunit;
@@ -73,12 +74,12 @@ namespace Microsoft.ML.Tests.Transformers
                 VectorString: ctx.LoadText(1, 4)
             ));
 
-            var data = reader.Read(new MultiFileSource(dataPath));
+            var data = reader.Read(dataPath);
 
             // Non-pigsty Term.
-            var dynamicData = new TermEstimator(Env,
+            var dynamicData = new TermEstimator(Env, new[] {
                 new TermTransform.ColumnInfo("ScalarString", "A"),
-                new TermTransform.ColumnInfo("VectorString", "B"))
+                new TermTransform.ColumnInfo("VectorString", "B") })
                 .Fit(data.AsDynamic).Transform(data.AsDynamic);
 
             var data2 = dynamicData.AssertStatic(Env, ctx => (
@@ -107,7 +108,7 @@ namespace Microsoft.ML.Tests.Transformers
 
 
             var dataView = ComponentCreation.CreateDataView(Env, data);
-            var termEst = new TermEstimator(Env,
+            var termEst = new TermEstimator(Env, new[] {
                 new TermTransform.ColumnInfo("A", "TA", textKeyValues: true),
                 new TermTransform.ColumnInfo("B", "TB"),
                 new TermTransform.ColumnInfo("C", "TC", textKeyValues: true),
@@ -115,7 +116,7 @@ namespace Microsoft.ML.Tests.Transformers
                 new TermTransform.ColumnInfo("E", "TE"),
                 new TermTransform.ColumnInfo("F", "TF"),
                 new TermTransform.ColumnInfo("G", "TG"),
-                new TermTransform.ColumnInfo("H", "TH", textKeyValues: true));
+                new TermTransform.ColumnInfo("H", "TH", textKeyValues: true) });
             var termTransformer = termEst.Fit(dataView);
             dataView = termTransformer.Transform(dataView);
 
@@ -147,12 +148,12 @@ namespace Microsoft.ML.Tests.Transformers
             Assert.True(result.Schema.TryGetColumnIndex("CatF", out int colH));
             var types = result.Schema.GetMetadataTypes(colA);
             Assert.Equal(types.Select(x => x.Key), new string[1] { MetadataUtils.Kinds.SlotNames });
-            VBuffer<DvText> slots = default;
-            VBuffer<DvInt4> slotRanges = default;
-            DvBool normalized = default;
+            VBuffer<ReadOnlyMemory<char>> slots = default;
+            VBuffer<int> slotRanges = default;
+            bool normalized = default;
             result.Schema.GetMetadata(MetadataUtils.Kinds.SlotNames, colA, ref slots);
             Assert.True(slots.Length == 2);
-            Assert.Equal(slots.Values.Select(x => x.ToString()), new string[2] { "A", "B" });
+            Assert.Equal(slots.Items().Select(x => x.Value.ToString()), new string[2] { "A", "B" });
 
             types = result.Schema.GetMetadataTypes(colB);
             Assert.Equal(types.Select(x => x.Key), new string[3] { MetadataUtils.Kinds.SlotNames, MetadataUtils.Kinds.CategoricalSlotRanges, MetadataUtils.Kinds.IsNormalized });
@@ -161,9 +162,9 @@ namespace Microsoft.ML.Tests.Transformers
             Assert.Equal(slots.Items().Select(x => x.Value.ToString()), new string[1] { "C" });
             result.Schema.GetMetadata(MetadataUtils.Kinds.CategoricalSlotRanges, colB, ref slotRanges);
             Assert.True(slotRanges.Length == 2);
-            Assert.Equal(slotRanges.Items().Select(x => x.Value.RawValue), new int[2] { 0, 0 });
+            Assert.Equal(slotRanges.Items().Select(x => x.Value), new int[2] { 0, 0 });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colB, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
             types = result.Schema.GetMetadataTypes(colC);
             Assert.Equal(types.Select(x => x.Key), new string[3] { MetadataUtils.Kinds.SlotNames, MetadataUtils.Kinds.CategoricalSlotRanges, MetadataUtils.Kinds.IsNormalized });
@@ -172,9 +173,9 @@ namespace Microsoft.ML.Tests.Transformers
             Assert.Equal(slots.Items().Select(x => x.Value.ToString()), new string[4] { "[0].3", "[0].5", "[1].3", "[1].5" });
             result.Schema.GetMetadata(MetadataUtils.Kinds.CategoricalSlotRanges, colC, ref slotRanges);
             Assert.True(slotRanges.Length == 4);
-            Assert.Equal(slotRanges.Items().Select(x => x.Value.RawValue), new int[4] { 0, 1, 2, 3 });
+            Assert.Equal(slotRanges.Items().Select(x => x.Value), new int[4] { 0, 1, 2, 3 });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colC, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
             types = result.Schema.GetMetadataTypes(colD);
             Assert.Equal(types.Select(x => x.Key), new string[2] { MetadataUtils.Kinds.SlotNames, MetadataUtils.Kinds.IsNormalized });
@@ -182,43 +183,40 @@ namespace Microsoft.ML.Tests.Transformers
             Assert.True(slots.Length == 2);
             Assert.Equal(slots.Items().Select(x => x.Value.ToString()), new string[2] { "6", "1" });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colD, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
 
             types = result.Schema.GetMetadataTypes(colE);
             Assert.Equal(types.Select(x => x.Key), new string[2] { MetadataUtils.Kinds.CategoricalSlotRanges, MetadataUtils.Kinds.IsNormalized });
             result.Schema.GetMetadata(MetadataUtils.Kinds.CategoricalSlotRanges, colE, ref slotRanges);
             Assert.True(slotRanges.Length == 4);
-            Assert.Equal(slotRanges.Items().Select(x => x.Value.RawValue), new int[4] { 0, 5, 6, 11 });
+            Assert.Equal(slotRanges.Items().Select(x => x.Value), new int[4] { 0, 5, 6, 11 });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colE, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
             types = result.Schema.GetMetadataTypes(colF);
             Assert.Equal(types.Select(x => x.Key), new string[1] { MetadataUtils.Kinds.IsNormalized });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colF, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
             types = result.Schema.GetMetadataTypes(colG);
             Assert.Equal(types.Select(x => x.Key), new string[2] { MetadataUtils.Kinds.CategoricalSlotRanges, MetadataUtils.Kinds.IsNormalized });
             result.Schema.GetMetadata(MetadataUtils.Kinds.CategoricalSlotRanges, colG, ref slotRanges);
             Assert.True(slotRanges.Length == 4);
-            Assert.Equal(slotRanges.Items().Select(x => x.Value.RawValue), new int[4] { 0, 5, 6, 11 });
+            Assert.Equal(slotRanges.Items().Select(x => x.Value), new int[4] { 0, 5, 6, 11 });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colF, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
 
             types = result.Schema.GetMetadataTypes(colH);
             Assert.Equal(types.Select(x => x.Key), new string[1] { MetadataUtils.Kinds.IsNormalized });
             result.Schema.GetMetadata(MetadataUtils.Kinds.IsNormalized, colF, ref normalized);
-            Assert.True(normalized.IsTrue);
+            Assert.True(normalized);
         }
 
         [Fact]
         public void TestCommandLine()
         {
-            using (var env = new TlcEnvironment())
-            {
-                Assert.Equal(Maml.Main(new[] { @"showschema loader=Text{col=A:R4:0} xf=Term{col=B:A} xf=KeyToVector{col=C:B col={name=D source=B bag+}} in=f:\2.txt" }), (int)0);
-            }
+            Assert.Equal(0, Maml.Main(new[] { @"showschema loader=Text{col=A:R4:0} xf=Term{col=B:A} xf=KeyToVector{col=C:B col={name=D source=B bag+}} in=f:\2.txt" }));
         }
 
         [Fact]

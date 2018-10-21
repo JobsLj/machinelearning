@@ -9,7 +9,6 @@ using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.Command;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Utilities;
 
 [assembly: LoadableClass(EvaluateTransform.Summary, typeof(IDataTransform), typeof(EvaluateTransform), typeof(EvaluateTransform.Arguments), typeof(SignatureDataTransform),
@@ -128,7 +127,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Column to use for grouping", ShortName = "group", SortOrder = 5)]
             public string GroupColumn = DefaultColumnNames.GroupId;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
             public KeyValuePair<string, string>[] CustomColumn;
 
             [Argument(ArgumentType.Multiple, HelpText = "Evaluator to use", ShortName = "eval", SignatureType = typeof(SignatureMamlEvaluator))]
@@ -179,7 +178,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Name column name", ShortName = "name", SortOrder = 6)]
             public string NameColumn = DefaultColumnNames.Name;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
             public KeyValuePair<string, string>[] CustomColumn;
 
             [Argument(ArgumentType.Multiple, HelpText = "Evaluator to use", ShortName = "eval", SignatureType = typeof(SignatureMamlEvaluator))]
@@ -207,7 +206,6 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = Host.Start("Evaluate"))
             {
                 RunCore(ch);
-                ch.Done();
             }
         }
 

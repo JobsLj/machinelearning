@@ -59,7 +59,6 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = Host.Start(LoadName))
             {
                 RunCore(ch);
-                ch.Done();
             }
         }
 
@@ -132,7 +131,7 @@ namespace Microsoft.ML.Runtime.Data
             var itw = IndentingTextWriter.Wrap(writer);
             using (itw.Nest())
             {
-                var names = default(VBuffer<DvText>);
+                var names = default(VBuffer<ReadOnlyMemory<char>>);
                 for (int col = 0; col < colLim; col++)
                 {
                     var name = schema.GetColumnName(col);
@@ -171,7 +170,7 @@ namespace Microsoft.ML.Runtime.Data
                         bool verbose = args.Verbose ?? false;
                         foreach (var kvp in names.Items(all: verbose))
                         {
-                            if (verbose || kvp.Value.HasChars)
+                            if (verbose || !kvp.Value.IsEmpty)
                                 itw.WriteLine("{0}:{1}", kvp.Key, kvp.Value);
                         }
                     }

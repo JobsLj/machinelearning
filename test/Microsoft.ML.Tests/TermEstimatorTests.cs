@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -8,6 +8,7 @@ using Microsoft.ML.Runtime.Data.IO;
 using Microsoft.ML.Runtime.Model;
 using Microsoft.ML.Runtime.RunTests;
 using Microsoft.ML.Runtime.Tools;
+using System;
 using System.IO;
 using Xunit;
 using Xunit.Abstractions;
@@ -76,7 +77,7 @@ namespace Microsoft.ML.Tests
                     new TermTransform.ColumnInfo("text1", "TermText1"),
                     new TermTransform.ColumnInfo("text2", "TermText2")
                 });
-            var data = loader.Read(new MultiFileSource(dataPath));
+            var data = loader.Read(dataPath);
             data = TakeFilter.Create(Env, data, 10);
             var outputPath = GetOutputPath("Term", "Term.tsv");
             using (var ch = Env.Start("save"))
@@ -137,11 +138,11 @@ namespace Microsoft.ML.Tests
             var dataView = ComponentCreation.CreateDataView(Env, data);
             var termEst = new TermEstimator(Env, new[] {
                     new TermTransform.ColumnInfo("Term" ,"T") });
+                    
             var termTransformer = termEst.Fit(dataView);
             var result = termTransformer.Transform(dataView);
-
             result.Schema.TryGetColumnIndex("T", out int termIndex);
-            var names1 = default(VBuffer<DvText>);
+            var names1 = default(VBuffer<ReadOnlyMemory<char>>);
             var type1 = result.Schema.GetColumnType(termIndex);
             int size = type1.ItemType.IsKey ? type1.ItemType.KeyCount : -1;
             result.Schema.GetMetadata(MetadataUtils.Kinds.KeyValues, termIndex, ref names1);
@@ -151,9 +152,9 @@ namespace Microsoft.ML.Tests
         [Fact]
         void TestCommandLine()
         {
-            using (var env = new TlcEnvironment())
+            using (var env = new ConsoleEnvironment())
             {
-                Assert.Equal(Maml.Main(new[] { @"showschema loader=Text{col=A:R4:0} xf=Term{col=B:A} in=f:\2.txt" }), (int)0);
+                Assert.Equal(0, Maml.Main(new[] { @"showschema loader=Text{col=A:R4:0} xf=Term{col=B:A} in=f:\2.txt" }));
             }
         }
 

@@ -2,9 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using Microsoft.ML;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Data.IO;
 using Microsoft.ML.Runtime.RunTests;
+using Microsoft.ML.Transforms;
+using System;
 using System.IO;
 using Xunit;
 using Xunit.Abstractions;
@@ -53,7 +56,7 @@ namespace Microsoft.ML.Tests.Transformers
                 new Normalizer.LogMeanVarColumn("double1", "double1lmv"),
                 new Normalizer.LogMeanVarColumn("double4", "double4lmv"));
 
-            var data = loader.Read(new MultiFileSource(dataPath));
+            var data = loader.Read(dataPath);
 
             var badData1 = new CopyColumnsTransform(Env, ("int1", "float1")).Transform(data);
             var badData2 = new CopyColumnsTransform(Env, ("float0", "float4")).Transform(data);
@@ -75,7 +78,7 @@ namespace Microsoft.ML.Tests.Transformers
         }
 
         [Fact]
-        public void SimpleConstructors()
+        public void SimpleConstructorsAndExtensions()
         {
             string dataPath = GetDataPath("iris.txt");
 
@@ -86,21 +89,64 @@ namespace Microsoft.ML.Tests.Transformers
                 }
             });
 
-            var data = loader.Read(new MultiFileSource(dataPath));
+            var data = loader.Read(dataPath);
 
             var est1 = new Normalizer(Env, "float4");
             var est2 = new Normalizer(Env, Normalizer.NormalizerMode.MinMax, ("float4", "float4"));
             var est3 = new Normalizer(Env, new Normalizer.MinMaxColumn("float4"));
+            var est4 = ML.Transforms.Normalizer(Normalizer.NormalizerMode.MinMax, ("float4", "float4"));
+            var est5 = ML.Transforms.Normalizer("float4");
 
             var data1 = est1.Fit(data).Transform(data);
             var data2 = est2.Fit(data).Transform(data);
             var data3 = est3.Fit(data).Transform(data);
+            var data4 = est4.Fit(data).Transform(data);
+            var data5 = est5.Fit(data).Transform(data);
 
             CheckSameSchemas(data1.Schema, data2.Schema);
             CheckSameSchemas(data1.Schema, data3.Schema);
+            CheckSameSchemas(data1.Schema, data4.Schema);
+            CheckSameSchemas(data1.Schema, data5.Schema);
             CheckSameValues(data1, data2);
             CheckSameValues(data1, data3);
+            CheckSameValues(data1, data4);
+            CheckSameValues(data1, data5);
 
+            Done();
+        }
+
+        [Fact]
+        public void LpGcNormAndWhiteningWorkout()
+        {
+            var env = new ConsoleEnvironment(seed: 0);
+            string dataSource = GetDataPath("generated_regression_dataset.csv");
+            var data = TextLoader.CreateReader(env,
+                c => (label: c.LoadFloat(11), features: c.LoadFloat(0, 10)),
+                separator: ';', hasHeader: true)
+                .Read(dataSource);
+
+            var invalidData = TextLoader.CreateReader(env,
+                c => (label: c.LoadFloat(11), features: c.LoadText(0, 10)),
+                separator: ';', hasHeader: true)
+                .Read(dataSource);
+
+            var est = new LpNormalizer(env, "features", "lpnorm")
+                .Append(new GlobalContrastNormalizer(env, "features", "gcnorm"))
+                .Append(new Whitening(env, "features", "whitened"));
+            TestEstimatorCore(est, data.AsDynamic, invalidInput: invalidData.AsDynamic);
+
+            var outputPath = GetOutputPath("Text", "lpnorm_gcnorm_whitened.tsv");
+            using (var ch = Env.Start("save"))
+            {
+                var saver = new TextSaver(Env, new TextSaver.Arguments { Silent = true, OutputHeader = false });
+                IDataView savedData = TakeFilter.Create(Env, est.Fit(data.AsDynamic).Transform(data.AsDynamic), 4);
+                savedData = new ChooseColumnsTransform(Env, savedData, "lpnorm", "gcnorm", "whitened");
+
+                using (var fs = File.Create(outputPath))
+                    DataSaverUtils.SaveDataView(ch, saver, savedData, fs, keepHidden: true);
+            }
+
+            CheckEquality("Text", "lpnorm_gcnorm_whitened.tsv", digitsOfPrecision: 4);
             Done();
         }
     }

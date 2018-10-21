@@ -2,12 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Data.StaticPipe.Runtime;
 using Microsoft.ML.Runtime;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data;
@@ -15,12 +10,18 @@ using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
 using Microsoft.ML.Runtime.Model.Onnx;
 using Microsoft.ML.Runtime.Model.Pfa;
+using Microsoft.ML.StaticPipe;
+using Microsoft.ML.StaticPipe.Runtime;
 using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 
 [assembly: LoadableClass(KeyToVectorTransform.Summary, typeof(IDataTransform), typeof(KeyToVectorTransform), typeof(KeyToVectorTransform.Arguments), typeof(SignatureDataTransform),
     "Key To Vector Transform", KeyToVectorTransform.UserName, "KeyToVector", "ToVector", DocName = "transform/KeyToVectorTransform.md")]
 
-[assembly: LoadableClass(KeyToVectorTransform.Summary, typeof(IDataView), typeof(KeyToVectorTransform), null, typeof(SignatureLoadDataTransform),
+[assembly: LoadableClass(KeyToVectorTransform.Summary, typeof(IDataTransform), typeof(KeyToVectorTransform), null, typeof(SignatureLoadDataTransform),
     "Key To Vector Transform", KeyToVectorTransform.LoaderSignature)]
 
 [assembly: LoadableClass(KeyToVectorTransform.Summary, typeof(KeyToVectorTransform), null, typeof(SignatureLoadModel),
@@ -143,7 +144,8 @@ namespace Microsoft.ML.Runtime.Data
                 verWrittenCur: 0x00010002, // Get rid of writing float size in model context
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature);
+                loaderSignature: LoaderSignature,
+                loaderAssemblyName: typeof(KeyToVectorTransform).Assembly.FullName);
         }
 
         public override void Save(ModelSaveContext ctx)
@@ -163,29 +165,23 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         // Factory method for SignatureLoadModel.
-        public static KeyToVectorTransform Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static KeyToVectorTransform Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(RegistrationName);
 
             host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
-
-            return new KeyToVectorTransform(host, ctx);
-        }
-
-        private static ModelLoadContext ReadFloatFromCtx(IHostEnvironment env, ModelLoadContext ctx)
-        {
             if (ctx.Header.ModelVerWritten == 0x00010001)
             {
                 int cbFloat = ctx.Reader.ReadInt32();
                 env.CheckDecode(cbFloat == sizeof(float));
             }
-            return ctx;
+            return new KeyToVectorTransform(host, ctx);
         }
 
         private KeyToVectorTransform(IHost host, ModelLoadContext ctx)
-          : base(host, ReadFloatFromCtx(host, ctx))
+          : base(host, ctx)
         {
             var columnsLength = ColumnPairs.Length;
             // *** Binary format ***
@@ -204,7 +200,7 @@ namespace Microsoft.ML.Runtime.Data
              new KeyToVectorTransform(env, columns).MakeDataTransform(input);
 
         // Factory method for SignatureDataTransform.
-        public static IDataTransform Create(IHostEnvironment env, Arguments args, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, Arguments args, IDataView input)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(args, nameof(args));
@@ -212,29 +208,26 @@ namespace Microsoft.ML.Runtime.Data
 
             env.CheckValue(args.Column, nameof(args.Column));
             var cols = new ColumnInfo[args.Column.Length];
-            using (var ch = env.Start("ValidateArgs"))
+            for (int i = 0; i < cols.Length; i++)
             {
-                for (int i = 0; i < cols.Length; i++)
-                {
-                    var item = args.Column[i];
+                var item = args.Column[i];
 
-                    cols[i] = new ColumnInfo(item.Source ?? item.Name,
-                        item.Name,
-                        item.Bag ?? args.Bag);
-                };
-            }
+                cols[i] = new ColumnInfo(item.Source ?? item.Name,
+                    item.Name,
+                    item.Bag ?? args.Bag);
+            };
             return new KeyToVectorTransform(env, cols).MakeDataTransform(input);
         }
 
         // Factory method for SignatureLoadDataTransform.
-        public static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
             => Create(env, ctx).MakeDataTransform(input);
 
         // Factory method for SignatureLoadRowMapper.
-        public static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
-        protected override IRowMapper MakeRowMapper(ISchema schema) => new Mapper(this, schema);
+        protected override IRowMapper MakeRowMapper(ISchema schema) => new Mapper(this, Schema.Create(schema));
 
         private sealed class Mapper : MapperBase, ISaveAsOnnx, ISaveAsPfa
         {
@@ -256,7 +249,7 @@ namespace Microsoft.ML.Runtime.Data
             private readonly ColInfo[] _infos;
             private readonly VectorType[] _types;
 
-            public Mapper(KeyToVectorTransform parent, ISchema inputSchema)
+            public Mapper(KeyToVectorTransform parent, Schema inputSchema)
                 : base(parent.Host.Register(nameof(Mapper)), parent, inputSchema)
             {
                 _parent = parent;
@@ -280,83 +273,86 @@ namespace Microsoft.ML.Runtime.Data
                     if (!inputSchema.TryGetColumnIndex(_parent.ColumnPairs[i].input, out int colSrc))
                         throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", _parent.ColumnPairs[i].input);
                     var type = inputSchema.GetColumnType(colSrc);
+                    _parent.CheckInputColumn(inputSchema, i, colSrc);
                     infos[i] = new ColInfo(_parent.ColumnPairs[i].output, _parent.ColumnPairs[i].input, type);
                 }
                 return infos;
             }
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
+            public override Schema.Column[] GetOutputColumns()
             {
-                var result = new RowMapperColumnInfo[_parent.ColumnPairs.Length];
+                var result = new Schema.Column[_parent.ColumnPairs.Length];
                 for (int i = 0; i < _parent.ColumnPairs.Length; i++)
                 {
                     InputSchema.TryGetColumnIndex(_parent.ColumnPairs[i].input, out int colIndex);
                     Host.Assert(colIndex >= 0);
-                    var colMetaInfo = new ColumnMetadataInfo(_parent.ColumnPairs[i].output);
-                    AddMetadata(i, colMetaInfo);
-                    result[i] = new RowMapperColumnInfo(_parent.ColumnPairs[i].output, _types[i], colMetaInfo);
+                    var builder = new Schema.Metadata.Builder();
+                    AddMetadata(i, builder);
+                    result[i] = new Schema.Column(_parent.ColumnPairs[i].output, _types[i], builder.GetMetadata());
                 }
                 return result;
             }
 
-            private void AddMetadata(int i, ColumnMetadataInfo colMetaInfo)
+            private void AddMetadata(int iinfo, Schema.Metadata.Builder builder)
             {
-                InputSchema.TryGetColumnIndex(_infos[i].Source, out int srcCol);
-                var srcType = _infos[i].TypeSrc;
-                var typeNames = InputSchema.GetMetadataTypeOrNull(MetadataUtils.Kinds.KeyValues, srcCol);
+                InputSchema.TryGetColumnIndex(_infos[iinfo].Source, out int srcCol);
+                var inputMetadata = InputSchema[srcCol].Metadata;
+
+                var srcType = _infos[iinfo].TypeSrc;
+
+                ColumnType typeNames = null;
+                int metaKeyValuesCol = 0;
+                if (inputMetadata.Schema.TryGetColumnIndex(MetadataUtils.Kinds.KeyValues, out metaKeyValuesCol))
+                    typeNames = inputMetadata.Schema[metaKeyValuesCol].Type;
                 if (typeNames == null || !typeNames.IsKnownSizeVector || !typeNames.ItemType.IsText ||
-                    typeNames.VectorSize != _infos[i].TypeSrc.ItemType.KeyCount)
+                    typeNames.VectorSize != _infos[iinfo].TypeSrc.ItemType.KeyCount)
                 {
                     typeNames = null;
                 }
-                if (_parent._columns[i].Bag || _infos[i].TypeSrc.ValueCount == 1)
+
+                if (_parent._columns[iinfo].Bag || _infos[iinfo].TypeSrc.ValueCount == 1)
                 {
                     if (typeNames != null)
                     {
-                        MetadataUtils.MetadataGetter<VBuffer<DvText>> getter = (int col, ref VBuffer<DvText> dst) =>
-                        {
-                            InputSchema.GetMetadata(MetadataUtils.Kinds.KeyValues, srcCol, ref dst);
-                        };
-                        var info = new MetadataInfo<VBuffer<DvText>>(typeNames, getter);
-                        colMetaInfo.Add(MetadataUtils.Kinds.SlotNames, info);
+                        var getter = inputMetadata.GetGetter<VBuffer<ReadOnlyMemory<char>>>(metaKeyValuesCol);
+                        var slotNamesType = new VectorType(TextType.Instance, _types[iinfo]);
+                        builder.AddSlotNames(slotNamesType.VectorSize, getter);
                     }
                 }
                 else
                 {
-                    if (typeNames != null && _types[i].IsKnownSizeVector)
+                    if (typeNames != null && _types[iinfo].IsKnownSizeVector)
                     {
-                        MetadataUtils.MetadataGetter<VBuffer<DvText>> getter = (int col, ref VBuffer<DvText> dst) =>
+                        ValueGetter<VBuffer<ReadOnlyMemory<char>>> getter = (ref VBuffer<ReadOnlyMemory<char>> dst) =>
                         {
-                            GetSlotNames(i, ref dst);
+                            GetSlotNames(iinfo, ref dst);
                         };
-                        var info = new MetadataInfo<VBuffer<DvText>>(new VectorType(TextType.Instance, _types[i]), getter);
-                        colMetaInfo.Add(MetadataUtils.Kinds.SlotNames, info);
+                        var slotNamesType = new VectorType(TextType.Instance, _types[iinfo]);
+                        builder.Add(new Schema.Column(MetadataUtils.Kinds.SlotNames, slotNamesType, null), getter);
                     }
                 }
 
-                if (!_parent._columns[i].Bag && srcType.ValueCount > 0)
+                if (!_parent._columns[iinfo].Bag && srcType.ValueCount > 0)
                 {
-                    MetadataUtils.MetadataGetter<VBuffer<DvInt4>> getter = (int col, ref VBuffer<DvInt4> dst) =>
+                    ValueGetter<VBuffer<int>> getter = (ref VBuffer<int> dst) =>
                     {
-                        GetCategoricalSlotRanges(i, ref dst);
+                        GetCategoricalSlotRanges(iinfo, ref dst);
                     };
-                    var info = new MetadataInfo<VBuffer<DvInt4>>(MetadataUtils.GetCategoricalType(_infos[i].TypeSrc.ValueCount), getter);
-                    colMetaInfo.Add(MetadataUtils.Kinds.CategoricalSlotRanges, info);
+                    builder.Add(new Schema.Column(MetadataUtils.Kinds.CategoricalSlotRanges, MetadataUtils.GetCategoricalType(_infos[iinfo].TypeSrc.ValueCount), null), getter);
                 }
 
-                if (!_parent._columns[i].Bag || srcType.ValueCount == 1)
+                if (!_parent._columns[iinfo].Bag || srcType.ValueCount == 1)
                 {
-                    MetadataUtils.MetadataGetter<DvBool> getter = (int col, ref DvBool dst) =>
+                    ValueGetter<bool> getter = (ref bool dst) =>
                     {
                         dst = true;
                     };
-                    var info = new MetadataInfo<DvBool>(BoolType.Instance, getter);
-                    colMetaInfo.Add(MetadataUtils.Kinds.IsNormalized, info);
+                    builder.Add(new Schema.Column(MetadataUtils.Kinds.IsNormalized, BoolType.Instance, null), getter);
                 }
             }
 
             // Combines source key names and slot names to produce final slot names.
-            private void GetSlotNames(int iinfo, ref VBuffer<DvText> dst)
+            private void GetSlotNames(int iinfo, ref VBuffer<ReadOnlyMemory<char>> dst)
             {
                 Host.Assert(0 <= iinfo && iinfo < _infos.Length);
                 Host.Assert(_types[iinfo].IsKnownSizeVector);
@@ -367,32 +363,33 @@ namespace Microsoft.ML.Runtime.Data
                 Host.Assert(typeSrc.VectorSize > 1);
 
                 // Get the source slot names, defaulting to empty text.
-                var namesSlotSrc = default(VBuffer<DvText>);
-                InputSchema.TryGetColumnIndex(_infos[iinfo].Source, out int srcCol);
-                Host.Assert(srcCol >= 0);
-                var typeSlotSrc = InputSchema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, srcCol);
+                var namesSlotSrc = default(VBuffer<ReadOnlyMemory<char>>);
+
+                var inputMetadata = InputSchema[_infos[iinfo].Source].Metadata;
+                Contracts.AssertValue(inputMetadata);
+                var typeSlotSrc = inputMetadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.SlotNames)?.Type;
                 if (typeSlotSrc != null && typeSlotSrc.VectorSize == typeSrc.VectorSize && typeSlotSrc.ItemType.IsText)
                 {
-                    InputSchema.GetMetadata(MetadataUtils.Kinds.SlotNames, srcCol, ref namesSlotSrc);
+                    inputMetadata.GetValue(MetadataUtils.Kinds.SlotNames, ref namesSlotSrc);
                     Host.Check(namesSlotSrc.Length == typeSrc.VectorSize);
                 }
                 else
-                    namesSlotSrc = VBufferUtils.CreateEmpty<DvText>(typeSrc.VectorSize);
+                    namesSlotSrc = VBufferUtils.CreateEmpty<ReadOnlyMemory<char>>(typeSrc.VectorSize);
 
                 int keyCount = typeSrc.ItemType.ItemType.KeyCount;
                 int slotLim = _types[iinfo].VectorSize;
                 Host.Assert(slotLim == (long)typeSrc.VectorSize * keyCount);
 
                 // Get the source key names, in an array (since we will use them multiple times).
-                var namesKeySrc = default(VBuffer<DvText>);
-                InputSchema.GetMetadata(MetadataUtils.Kinds.KeyValues, srcCol, ref namesKeySrc);
+                var namesKeySrc = default(VBuffer<ReadOnlyMemory<char>>);
+                inputMetadata.GetValue(MetadataUtils.Kinds.KeyValues, ref namesKeySrc);
                 Host.Check(namesKeySrc.Length == keyCount);
-                var keys = new DvText[keyCount];
+                var keys = new ReadOnlyMemory<char>[keyCount];
                 namesKeySrc.CopyTo(keys);
 
                 var values = dst.Values;
                 if (Utils.Size(values) < slotLim)
-                    values = new DvText[slotLim];
+                    values = new ReadOnlyMemory<char>[slotLim];
 
                 var sb = new StringBuilder();
                 int slot = 0;
@@ -400,8 +397,8 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     Contracts.Assert(slot == (long)kvpSlot.Key * keyCount);
                     sb.Clear();
-                    if (kvpSlot.Value.HasChars)
-                        kvpSlot.Value.AddToStringBuilder(sb);
+                    if (!kvpSlot.Value.IsEmpty)
+                        sb.AppendMemory(kvpSlot.Value);
                     else
                         sb.Append('[').Append(kvpSlot.Key).Append(']');
                     sb.Append('.');
@@ -410,16 +407,16 @@ namespace Microsoft.ML.Runtime.Data
                     foreach (var key in keys)
                     {
                         sb.Length = len;
-                        key.AddToStringBuilder(sb);
-                        values[slot++] = new DvText(sb.ToString());
+                        sb.AppendMemory(key);
+                        values[slot++] = sb.ToString().AsMemory();
                     }
                 }
                 Host.Assert(slot == slotLim);
 
-                dst = new VBuffer<DvText>(slotLim, values, dst.Indices);
+                dst = new VBuffer<ReadOnlyMemory<char>>(slotLim, values, dst.Indices);
             }
 
-            private void GetCategoricalSlotRanges(int iinfo, ref VBuffer<DvInt4> dst)
+            private void GetCategoricalSlotRanges(int iinfo, ref VBuffer<int> dst)
             {
                 Host.Assert(0 <= iinfo && iinfo < _infos.Length);
 
@@ -427,7 +424,7 @@ namespace Microsoft.ML.Runtime.Data
 
                 Host.Assert(info.TypeSrc.ValueCount > 0);
 
-                DvInt4[] ranges = new DvInt4[info.TypeSrc.ValueCount * 2];
+                int[] ranges = new int[info.TypeSrc.ValueCount * 2];
                 int size = info.TypeSrc.ItemType.KeyCount;
 
                 ranges[0] = 0;
@@ -438,7 +435,7 @@ namespace Microsoft.ML.Runtime.Data
                     ranges[i + 1] = ranges[i] + size - 1;
                 }
 
-                dst = new VBuffer<DvInt4>(ranges.Length, ranges);
+                dst = new VBuffer<int>(ranges.Length, ranges);
             }
 
             protected override Delegate MakeGetter(IRow input, int iinfo, out Action disposer)
@@ -608,7 +605,7 @@ namespace Microsoft.ML.Runtime.Data
                     };
             }
 
-            public bool CanSaveOnnx => true;
+            public bool CanSaveOnnx(OnnxContext ctx) => true;
 
             public bool CanSavePfa => true;
 
@@ -707,10 +704,29 @@ namespace Microsoft.ML.Runtime.Data
 
             private bool SaveAsOnnxCore(OnnxContext ctx, int iinfo, ColInfo info, string srcVariableName, string dstVariableName)
             {
+                var shape = ctx.RetrieveShapeOrNull(srcVariableName);
+                // Make sure that shape must present for calculating the reduction axes. The shape here is generally not null
+                // because inputs and outputs of a transform are declared with shapes.
+                Contracts.CheckValue(shape, nameof(shape));
+
+                // If Bag is true, the output of ONNX LabelEncoder needs to be fed into ONNX ReduceSum because
+                // default ONNX LabelEncoder just matches the behavior of Bag=false.
+                var encodedVariableName = _parent._columns[iinfo].Bag ? ctx.AddIntermediateVariable(null, "encoded", true) : dstVariableName;
+
                 string opType = "OneHotEncoder";
-                var node = ctx.CreateNode(opType, srcVariableName, dstVariableName, ctx.GetNodeName(opType));
-                node.AddAttribute("cats_int64s", Enumerable.Range(1, info.TypeSrc.ItemType.KeyCount).Select(x => (long)x));
+                var node = ctx.CreateNode(opType, srcVariableName, encodedVariableName, ctx.GetNodeName(opType));
+                node.AddAttribute("cats_int64s", Enumerable.Range(0, info.TypeSrc.ItemType.KeyCount).Select(x => (long)x));
                 node.AddAttribute("zeros", true);
+                if (_parent._columns[iinfo].Bag)
+                {
+                    // If input shape is [1, 3], then OneHotEncoder may produce a 3-D tensor. Thus, we need to do a
+                    // reduction along the second last axis to merge the one-hot vectors produced by all input features.
+                    // Note that one input feature got expended to an one-hot vector.
+                    opType = "ReduceSum";
+                    var reduceNode = ctx.CreateNode(opType, encodedVariableName, dstVariableName, ctx.GetNodeName(opType), "");
+                    reduceNode.AddAttribute("axes", new long[] { shape.Count - 1 });
+                    reduceNode.AddAttribute("keepdims", 0);
+                }
                 return true;
             }
         }
@@ -718,7 +734,7 @@ namespace Microsoft.ML.Runtime.Data
 
     public sealed class KeyToVectorEstimator : TrivialEstimator<KeyToVectorTransform>
     {
-        public static class Defaults
+        internal static class Defaults
         {
             public const bool Bag = false;
         }
@@ -733,7 +749,7 @@ namespace Microsoft.ML.Runtime.Data
         {
         }
 
-        public KeyToVectorEstimator(IHostEnvironment env, KeyToVectorTransform transformer)
+        private KeyToVectorEstimator(IHostEnvironment env, KeyToVectorTransform transformer)
             : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(KeyToVectorEstimator)), transformer)
         {
         }

@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Runtime.RunTests;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -21,29 +21,14 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         [Fact]
         void New_CrossValidation()
         {
-            var dataPath = GetDataPath(SentimentDataPath);
-            var testDataPath = GetDataPath(SentimentTestPath);
+            var ml = new MLContext(seed: 1, conc: 1);
 
-            using (var env = new TlcEnvironment(seed: 1, conc: 1))
-            {
+            var data = ml.Data.TextReader(MakeSentimentTextLoaderArgs()).Read(GetDataPath(TestDatasets.Sentiment.trainFilename));
+            // Pipeline.
+            var pipeline = ml.Transforms.Text.FeaturizeText("SentimentText", "Features")
+                    .Append(ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: (s) => { s.ConvergenceTolerance = 1f; s.NumThreads = 1; }));
 
-                var data = new TextLoader(env, MakeSentimentTextLoaderArgs())
-                    .Read(new MultiFileSource(dataPath));
-                // Pipeline.
-                var pipeline = new TextTransform(env, "SentimentText", "Features")
-                        .Append(new LinearClassificationTrainer(env, new LinearClassificationTrainer.Arguments
-                        {
-                            NumThreads = 1,
-                            ConvergenceTolerance = 1f
-                        }, "Features", "Label"));
-
-                var cv = new MyCrossValidation.BinaryCrossValidator(env)
-                {
-                    NumFolds = 2
-                };
-
-                var cvResult = cv.CrossValidate(data, pipeline);
-            }
+            var cvResult = ml.BinaryClassification.CrossValidate(data, pipeline);
         }
     }
 }

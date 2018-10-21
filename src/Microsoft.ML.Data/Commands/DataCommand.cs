@@ -9,7 +9,6 @@ using System.Linq;
 using Microsoft.ML.Runtime.Command;
 using Microsoft.ML.Runtime.CommandLine;
 using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.EntryPoints;
 using Microsoft.ML.Runtime.Internal.Utilities;
 using Microsoft.ML.Runtime.Model;
 
@@ -114,7 +113,6 @@ namespace Microsoft.ML.Runtime.Data
                 using (var pipe = prov.StartPipe<TelemetryMessage>("TelemetryPipe"))
                 {
                     SendTelemetryCore(pipe);
-                    pipe.Done();
                 }
             }
 
@@ -151,7 +149,6 @@ namespace Microsoft.ML.Runtime.Data
                         foreach (var pair in averageMetric)
                             pipe.Send(TelemetryMessage.CreateMetric(pair.Key, pair.Value, null));
                     }
-                    pipe.Done();
                 }
             }
 

@@ -5,6 +5,7 @@
 using Microsoft.ML.Runtime.Api;
 using Microsoft.ML.Runtime.Data;
 using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Runtime.RunTests;
 using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
@@ -19,19 +20,16 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         /// reallocate internal memory buffers on every single prediction, the PredictionEngine
         /// (or its estimator/transformer based successor) is, like most stateful .NET objects,
         /// fundamentally not thread safe. This is deliberate and as designed. However, some mechanism
-        /// to enable multi-threaded scenarios (e.g., a web server servicing requests) should be possible
+        /// to enable multi-threaded scenarios (for example, a web server servicing requests) should be possible
         /// and performant in the new API.
         /// </summary>
         [Fact]
         void MultithreadedPrediction()
         {
-            var dataPath = GetDataPath(SentimentDataPath);
-            var testDataPath = GetDataPath(SentimentTestPath);
-
-            using (var env = new TlcEnvironment(seed: 1, conc: 1))
+            using (var env = new LocalEnvironment(seed: 1, conc: 1))
             {
                 // Pipeline
-                var loader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(dataPath));
+                var loader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
 
                 var trans = TextTransform.Create(env, MakeSentimentTextTransformArgs(), loader);
 
@@ -52,7 +50,7 @@ namespace Microsoft.ML.Tests.Scenarios.Api
                 var model = env.CreatePredictionEngine<SentimentData, SentimentPrediction>(scorer);
 
                 // Take a couple examples out of the test data and run predictions on top.
-                var testLoader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(GetDataPath(SentimentTestPath)));
+                var testLoader = TextLoader.ReadFile(env, MakeSentimentTextLoaderArgs(), new MultiFileSource(GetDataPath(TestDatasets.Sentiment.testFilename)));
                 var testData = testLoader.AsEnumerable<SentimentData>(env, false);
 
                 Parallel.ForEach(testData, (input) =>

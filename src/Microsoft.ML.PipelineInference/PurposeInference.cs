@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Runtime.Internal.Utilities;
 
 namespace Microsoft.ML.Runtime.PipelineInference
 {
@@ -172,7 +173,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
                     {
                         if (column.IsPurposeSuggested || !column.Type.IsText)
                             continue;
-                        var data = column.GetData<DvText>();
+                        var data = column.GetData<ReadOnlyMemory<char>>();
 
                         long sumLength = 0;
                         int sumSpaces = 0;
@@ -181,7 +182,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
                         foreach (var span in data)
                         {
                             sumLength += span.Length;
-                            seen.Add(span.IsNA ? 0 : span.Hash(0));
+                            seen.Add(Hashing.MurmurHash(0, span.Span));
                             string spanStr = span.ToString();
                             sumSpaces += spanStr.Count(x => x == ' ');
 
@@ -338,7 +339,7 @@ namespace Microsoft.ML.Runtime.PipelineInference
                 if (dataRoles != null)
                 {
                     var items = dataRoles.Schema.GetColumnRoles();
-                    foreach(var item in items)
+                    foreach (var item in items)
                     {
                         Enum.TryParse(item.Key.Value, out ColumnPurpose purpose);
                         var col = cols.Find(x => x.ColumnName == item.Value.Name);
@@ -351,7 +352,6 @@ namespace Microsoft.ML.Runtime.PipelineInference
                     using (var expertChannel = host.Start(expert.GetType().ToString()))
                     {
                         expert.Apply(expertChannel, cols.ToArray());
-                        expertChannel.Done();
                     }
                 }
 
@@ -360,7 +360,6 @@ namespace Microsoft.ML.Runtime.PipelineInference
                 result = new InferenceResult(cols.Select(x => x.GetColumn()).ToArray());
 
                 ch.Info("Automatic purpose inference complete");
-                ch.Done();
             }
             return result;
         }
