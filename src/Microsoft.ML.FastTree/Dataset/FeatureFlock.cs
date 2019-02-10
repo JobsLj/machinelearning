@@ -12,11 +12,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using Microsoft.ML.Runtime.Internal.CpuMath;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.CpuMath;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
     /// <summary>
     /// Holds statistics per bin value for a feature. These are yielded by <see cref="SufficientStatsBase.GetBinStats"/>
@@ -24,7 +23,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// are then used in <see cref="LeastSquaresRegressionTreeLearner"/> to find splitting on which bin will yield the
     /// best least squares solution
     /// </summary>
-    public struct PerBinStats
+    public readonly struct PerBinStats
     {
         /// <summary>Sum of all target values in a partition for the bin.</summary>
         public readonly Double SumTargets;
@@ -52,7 +51,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// per flock. Note that feature indices, whenever present, refer to the feature within the
     /// particular flock the same as they do with <see cref="FeatureFlockBase"/>.
     /// </summary>
-    public abstract class SufficientStatsBase
+    internal abstract class SufficientStatsBase
     {
         // REVIEW: Holdover from histogram. I really don't like this. Figure out if
         // there's a better way.
@@ -930,7 +929,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// </summary>
     /// <typeparam name="TSuffStats">The type of sufficient stats that we will be able to do
     /// "peer" operations against, like subtract. This will always be the derived class itself.</typeparam>
-    public abstract class SufficientStatsBase<TSuffStats> : SufficientStatsBase
+    internal abstract class SufficientStatsBase<TSuffStats> : SufficientStatsBase
         where TSuffStats : SufficientStatsBase<TSuffStats>
     {
         protected SufficientStatsBase(int features)
@@ -1006,7 +1005,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         /// <param name="hasWeights">Whether structures related to tracking
         /// example weights should be allocated</param>
         /// <returns>A sufficient statistics object</returns>
-        public abstract SufficientStatsBase CreateSufficientStats(bool hasWeights);
+        internal abstract SufficientStatsBase CreateSufficientStats(bool hasWeights);
 
         /// <summary>
         /// Returns a forward indexer for a single feature. This has a default implementation that
@@ -1171,7 +1170,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             Contracts.AssertValue(binUpperBounds);
             Contracts.Assert(Utils.Size(hotFeatureStarts) == binUpperBounds.Length + 1); // One more than number of features.
             Contracts.Assert(hotFeatureStarts[0] == 1);
-            Contracts.Assert(Utils.IsSorted(hotFeatureStarts));
+            Contracts.Assert(Utils.IsMonotonicallyIncreasing(hotFeatureStarts));
             Contracts.Assert(bins.Max() < hotFeatureStarts[hotFeatureStarts.Length - 1]);
 
             Bins = bins;
@@ -1208,7 +1207,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
                    + sizeof(int) * HotFeatureStarts.Length;
         }
 
-        public override SufficientStatsBase CreateSufficientStats(bool hasWeights)
+        internal override SufficientStatsBase CreateSufficientStats(bool hasWeights)
         {
             return new SufficientStats(this, hasWeights);
         }

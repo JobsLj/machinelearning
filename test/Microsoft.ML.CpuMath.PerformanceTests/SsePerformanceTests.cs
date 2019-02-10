@@ -5,7 +5,7 @@
 using System;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
-using Microsoft.ML.Runtime.Internal.CpuMath;
+using Microsoft.ML.Internal.CpuMath;
 
 namespace Microsoft.ML.CpuMath.PerformanceTests
 {
@@ -52,8 +52,8 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             => SseIntrinsics.MulElementWiseU(src1, src2, dst, Length);
 
         [Benchmark]
-        public float SumU()
-            => SseIntrinsics.SumU(new Span<float>(src, 0, Length));
+        public float Sum()
+            => SseIntrinsics.Sum(new Span<float>(src, 0, Length));
 
         [Benchmark]
         public float SumSqU()
@@ -100,11 +100,15 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             => SseIntrinsics.SdcaL1UpdateSU(DefaultScale, IndexLength, src, idx, DefaultScale, dst, result);
 
         [Benchmark]
-        public void MatMulX()
-            => SseIntrinsics.MatMul(src, src1, dst, 1000, 1000);
+        public void MatMul()
+            => SseIntrinsics.MatMul(testMatrixAligned, testSrcVectorAligned, testDstVectorAligned, matrixLength, matrixLength);
 
         [Benchmark]
-        public void MatMulTranX()
-            => SseIntrinsics.MatMulTran(src, src1, dst, 1000, 1000);
+        public void MatMulTran()
+            => SseIntrinsics.MatMulTran(testMatrixAligned, testSrcVectorAligned, testDstVectorAligned, matrixLength, matrixLength);
+
+        [Benchmark]
+        public void MatMulP()
+           => SseIntrinsics.MatMulP(testMatrixAligned, matrixIdx, testSrcVectorAligned, 0, 0, MatrixIndexLength, testDstVectorAligned, matrixLength, matrixLength);
     }
 }

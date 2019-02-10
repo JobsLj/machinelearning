@@ -3,17 +3,18 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeriesProcessing;
 
 [assembly: LoadableClass(SlidingWindowTransform.Summary, typeof(SlidingWindowTransform), typeof(SlidingWindowTransform.Arguments), typeof(SignatureDataTransform),
     SlidingWindowTransform.UserName, SlidingWindowTransform.LoaderSignature, SlidingWindowTransform.ShortName)]
 [assembly: LoadableClass(SlidingWindowTransform.Summary, typeof(SlidingWindowTransform), null, typeof(SignatureLoadDataTransform),
     SlidingWindowTransform.UserName, SlidingWindowTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// Outputs a sliding window on a time series of type Single.
@@ -48,7 +49,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // <base>
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -56,7 +57,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
 
             // *** Binary format ***
             // <base>
-            base.Save(ctx);
+            base.SaveModel(ctx);
         }
     }
 }

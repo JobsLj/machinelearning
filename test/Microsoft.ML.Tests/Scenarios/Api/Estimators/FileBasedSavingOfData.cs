@@ -2,12 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
 using System.IO;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -22,23 +21,29 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         /// and don't necessarily want to transform it every single time.)
         /// </summary>
         [Fact]
-        void New_FileBasedSavingOfData()
+        void FileBasedSavingOfData()
         {
 
             var ml = new MLContext(seed: 1, conc: 1);
-            var trainData = ml.Data.TextReader(MakeSentimentTextLoaderArgs())
-                .Append(ml.Transforms.Text.FeaturizeText("SentimentText", "Features"))
-                .FitAndRead(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
+            var src = new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename));
+            var trainData = ml.Data.CreateTextLoader(TestDatasets.Sentiment.GetLoaderColumns(), hasHeader: true)
+                .Append(ml.Transforms.Text.FeaturizeText("Features", "SentimentText"))
+                .Fit(src).Read(src);
 
-            using (var file = File.Create(GetOutputPath("i.idv")))
-                trainData.SaveAsBinary(ml, file);
+            var path = DeleteOutputPath("i.idv");
+            using (var file = File.Create(path))
+            {
+                var saver = new BinarySaver(ml, new BinarySaver.Arguments());
+                using (var ch = ((IHostEnvironment)ml).Start("SaveData"))
+                    DataSaverUtils.SaveDataView(ch, saver, trainData, file);
+            }
 
-            var trainer = ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: s => s.NumThreads = 1);
-            var loadedTrainData = new BinaryLoader(ml, new BinaryLoader.Arguments(), new MultiFileSource("i.idv"));
+            var trainer = ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(
+                new SdcaBinaryTrainer.Options { NumThreads = 1 });
+            var loadedTrainData = new BinaryLoader(ml, new BinaryLoader.Arguments(), new MultiFileSource(path));
 
             // Train.
             var model = trainer.Fit(loadedTrainData);
-            DeleteOutputPath("i.idv");
         }
     }
 }

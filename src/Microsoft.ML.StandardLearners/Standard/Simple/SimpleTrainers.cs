@@ -2,16 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
 using System;
 using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Training;
 
 [assembly: LoadableClass(RandomTrainer.Summary, typeof(RandomTrainer), typeof(RandomTrainer.Arguments),
     new[] { typeof(SignatureBinaryClassifierTrainer), typeof(SignatureTrainer) },
@@ -26,20 +27,20 @@ using System.Linq;
     "prior",
     "constant")]
 
-[assembly: LoadableClass(typeof(RandomPredictor), null, typeof(SignatureLoadModel),
-    "Random predictor", RandomPredictor.LoaderSignature)]
+[assembly: LoadableClass(typeof(RandomModelParameters), null, typeof(SignatureLoadModel),
+    "Random predictor", RandomModelParameters.LoaderSignature)]
 
-[assembly: LoadableClass(typeof(PriorPredictor), null, typeof(SignatureLoadModel),
-    "Prior predictor", PriorPredictor.LoaderSignature)]
+[assembly: LoadableClass(typeof(PriorModelParameters), null, typeof(SignatureLoadModel),
+    "Prior predictor", PriorModelParameters.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Learners
+namespace Microsoft.ML.Trainers
 {
     /// <summary>
     /// A trainer that trains a predictor that returns random values
     /// </summary>
 
-    public sealed class RandomTrainer : TrainerBase<RandomPredictor>,
-        ITrainerEstimator<BinaryPredictionTransformer<RandomPredictor>, RandomPredictor>
+    public sealed class RandomTrainer : TrainerBase<RandomModelParameters>,
+        ITrainerEstimator<BinaryPredictionTransformer<RandomModelParameters>, RandomModelParameters>
     {
         internal const string LoadNameValue = "RandomPredictor";
         internal const string UserNameValue = "Random Predictor";
@@ -68,26 +69,24 @@ namespace Microsoft.ML.Runtime.Learners
             Host.CheckValue(args, nameof(args));
         }
 
-        public BinaryPredictionTransformer<RandomPredictor> Fit(IDataView input)
+        public BinaryPredictionTransformer<RandomModelParameters> Fit(IDataView input)
         {
-            var cachedTrain = Info.WantCaching ? new CacheDataView(Host, input, prefetch: null) : input;
-
-            RoleMappedData trainRoles = new RoleMappedData(cachedTrain);
+            RoleMappedData trainRoles = new RoleMappedData(input);
             var pred = Train(new TrainContext(trainRoles));
-            return new BinaryPredictionTransformer<RandomPredictor>(Host, pred, cachedTrain.Schema, featureColumn: null);
+            return new BinaryPredictionTransformer<RandomModelParameters>(Host, pred, input.Schema, featureColumn: null);
         }
 
-        public override RandomPredictor Train(TrainContext context)
+        private protected override RandomModelParameters Train(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
-            return new RandomPredictor(Host, Host.Rand.Next());
+            return new RandomModelParameters(Host, Host.Rand.Next());
         }
 
         public SchemaShape GetOutputSchema(SchemaShape inputSchema)
         {
             Host.CheckValue(inputSchema, nameof(inputSchema));
 
-            var outColumns = inputSchema.Columns.ToDictionary(x => x.Name);
+            var outColumns = inputSchema.ToDictionary(x => x.Name);
 
             var newColumns = new[]
             {
@@ -106,13 +105,12 @@ namespace Microsoft.ML.Runtime.Learners
     /// The predictor implements the Predict() interface. The predictor returns a
     ///  uniform random probability and classification assignment.
     /// </summary>
-    public sealed class RandomPredictor :
-        PredictorBase<float>,
+    public sealed class RandomModelParameters :
+        ModelParametersBase<float>,
         IDistPredictorProducing<float, float>,
-        IValueMapperDist,
-        ICanSaveModel
+        IValueMapperDist
     {
-        public const string LoaderSignature = "RandomPredictor";
+        internal const string LoaderSignature = "RandomPredictor";
         private static VersionInfo GetVersionInfo()
         {
             return new VersionInfo(
@@ -121,20 +119,27 @@ namespace Microsoft.ML.Runtime.Learners
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(RandomPredictor).Assembly.FullName);
+                loaderAssemblyName: typeof(RandomModelParameters).Assembly.FullName);
         }
 
         // Keep all the serializable state here.
         private readonly int _seed;
         private readonly object _instanceLock;
-        private readonly IRandom _random;
+        private readonly Random _random;
 
         public override PredictionKind PredictionKind => PredictionKind.BinaryClassification;
-        public ColumnType InputType { get; }
-        public ColumnType OutputType => NumberType.Float;
-        public ColumnType DistType => NumberType.Float;
 
-        public RandomPredictor(IHostEnvironment env, int seed)
+        private readonly ColumnType _inputType;
+        ColumnType IValueMapper.InputType => _inputType;
+        ColumnType IValueMapper.OutputType => NumberType.Float;
+        ColumnType IValueMapperDist.DistType => NumberType.Float;
+
+        /// <summary>
+        /// Instantiate a model that returns a uniform random probability.
+        /// </summary>
+        /// <param name="env">The host environment.</param>
+        /// <param name="seed">The random seed.</param>
+        public RandomModelParameters(IHostEnvironment env, int seed)
             : base(env, LoaderSignature)
         {
             _seed = seed;
@@ -142,13 +147,13 @@ namespace Microsoft.ML.Runtime.Learners
             _instanceLock = new object();
             _random = RandomUtils.Create(_seed);
 
-            InputType = new VectorType(NumberType.Float);
+            _inputType = new VectorType(NumberType.Float);
         }
 
         /// <summary>
         /// Load the predictor from the binary format.
         /// </summary>
-        private RandomPredictor(IHostEnvironment env, ModelLoadContext ctx)
+        private RandomModelParameters(IHostEnvironment env, ModelLoadContext ctx)
             : base(env, LoaderSignature, ctx)
         {
             // *** Binary format ***
@@ -159,22 +164,22 @@ namespace Microsoft.ML.Runtime.Learners
             _instanceLock = new object();
             _random = RandomUtils.Create(_seed);
 
-            InputType = new VectorType(NumberType.Float);
+            _inputType = new VectorType(NumberType.Float);
         }
 
-        public static RandomPredictor Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static RandomModelParameters Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
-            return new RandomPredictor(env, ctx);
+            return new RandomModelParameters(env, ctx);
         }
 
         /// <summary>
         /// Save the predictor in the binary format.
         /// </summary>
         /// <param name="ctx"></param>
-        protected override void SaveCore(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             base.SaveCore(ctx);
             ctx.SetVersionInfo(GetVersionInfo());
@@ -185,7 +190,7 @@ namespace Microsoft.ML.Runtime.Learners
             ctx.Writer.Write(_seed);
         }
 
-        public ValueMapper<TIn, TOut> GetMapper<TIn, TOut>()
+        ValueMapper<TIn, TOut> IValueMapper.GetMapper<TIn, TOut>()
         {
             Contracts.Check(typeof(TIn) == typeof(VBuffer<float>));
             Contracts.Check(typeof(TOut) == typeof(float));
@@ -194,7 +199,7 @@ namespace Microsoft.ML.Runtime.Learners
             return (ValueMapper<TIn, TOut>)(Delegate)del;
         }
 
-        public ValueMapper<TIn, TOut, TDist> GetMapper<TIn, TOut, TDist>()
+        ValueMapper<TIn, TOut, TDist> IValueMapperDist.GetMapper<TIn, TOut, TDist>()
         {
             Contracts.Check(typeof(TIn) == typeof(VBuffer<float>));
             Contracts.Check(typeof(TOut) == typeof(float));
@@ -216,12 +221,12 @@ namespace Microsoft.ML.Runtime.Learners
             }
         }
 
-        private void Map(ref VBuffer<float> src, ref float dst)
+        private void Map(in VBuffer<float> src, ref float dst)
         {
             dst = PredictCore();
         }
 
-        private void MapDist(ref VBuffer<float> src, ref float score, ref float prob)
+        private void MapDist(in VBuffer<float> src, ref float score, ref float prob)
         {
             score = PredictCore();
             prob = (score + 1) / 2;
@@ -231,8 +236,8 @@ namespace Microsoft.ML.Runtime.Learners
     /// <summary>
     /// Learns the prior distribution for 0/1 class labels and just outputs that.
     /// </summary>
-    public sealed class PriorTrainer : TrainerBase<PriorPredictor>,
-        ITrainerEstimator<BinaryPredictionTransformer<PriorPredictor>, PriorPredictor>
+    public sealed class PriorTrainer : TrainerBase<PriorModelParameters>,
+        ITrainerEstimator<BinaryPredictionTransformer<PriorModelParameters>, PriorModelParameters>
     {
         internal const string LoadNameValue = "PriorPredictor";
         internal const string UserNameValue = "Prior Predictor";
@@ -268,31 +273,32 @@ namespace Microsoft.ML.Runtime.Learners
             _weightColumnName = weightColunn != null ? weightColunn : null;
         }
 
-        public BinaryPredictionTransformer<PriorPredictor> Fit(IDataView input)
+        public BinaryPredictionTransformer<PriorModelParameters> Fit(IDataView input)
         {
-            var cachedTrain = Info.WantCaching ? new CacheDataView(Host, input, prefetch: null) : input;
-
-            RoleMappedData trainRoles = new RoleMappedData(cachedTrain, feature: null, label: _labelColumnName, weight: _weightColumnName);
+            RoleMappedData trainRoles = new RoleMappedData(input, feature: null, label: _labelColumnName, weight: _weightColumnName);
             var pred = Train(new TrainContext(trainRoles));
-            return new BinaryPredictionTransformer<PriorPredictor>(Host, pred, cachedTrain.Schema, featureColumn: null);
+            return new BinaryPredictionTransformer<PriorModelParameters>(Host, pred, input.Schema, featureColumn: null);
         }
 
-        public override PriorPredictor Train(TrainContext context)
+        private protected override PriorModelParameters Train(TrainContext context)
         {
-            Contracts.CheckValue(context, nameof(context));
+            Host.CheckValue(context, nameof(context));
             var data = context.TrainingSet;
             data.CheckBinaryLabel();
-            Contracts.CheckParam(data.Schema.Label != null, nameof(data), "Missing Label column");
-            Contracts.CheckParam(data.Schema.Label.Type == NumberType.Float, nameof(data), "Invalid type for Label column");
+            Host.CheckParam(data.Schema.Label.HasValue, nameof(data), "Missing Label column");
+            var labelCol = data.Schema.Label.Value;
+            Host.CheckParam(labelCol.Type == NumberType.Float, nameof(data), "Invalid type for Label column");
 
             double pos = 0;
             double neg = 0;
 
-            int col = data.Schema.Label.Index;
             int colWeight = -1;
             if (data.Schema.Weight?.Type == NumberType.Float)
-                colWeight = data.Schema.Weight.Index;
-            using (var cursor = data.Data.GetRowCursor(c => c == col || c == colWeight))
+                colWeight = data.Schema.Weight.Value.Index;
+
+            var cols = colWeight > -1 ? new Schema.Column[] { labelCol, data.Schema.Weight.Value } : new Schema.Column[] { labelCol };
+
+            using (var cursor = data.Data.GetRowCursor(cols))
             {
                 var getLab = cursor.GetLabelFloatGetter(data);
                 var getWeight = colWeight >= 0 ? cursor.GetGetter<float>(colWeight) : null;
@@ -317,7 +323,7 @@ namespace Microsoft.ML.Runtime.Learners
             }
 
             float prob = prob = pos + neg > 0 ? (float)(pos / (pos + neg)) : float.NaN;
-            return new PriorPredictor(Host, prob);
+            return new PriorModelParameters(Host, prob);
         }
 
         private static SchemaShape.Column MakeFeatureColumn(string featureColumn)
@@ -330,7 +336,7 @@ namespace Microsoft.ML.Runtime.Learners
         {
             Host.CheckValue(inputSchema, nameof(inputSchema));
 
-            var outColumns = inputSchema.Columns.ToDictionary(x => x.Name);
+            var outColumns = inputSchema.ToDictionary(x => x.Name);
 
             var newColumns = new[]
             {
@@ -345,13 +351,12 @@ namespace Microsoft.ML.Runtime.Learners
         }
     }
 
-    public sealed class PriorPredictor :
-        PredictorBase<float>,
+    public sealed class PriorModelParameters :
+        ModelParametersBase<float>,
         IDistPredictorProducing<float, float>,
-        IValueMapperDist,
-        ICanSaveModel
+        IValueMapperDist
     {
-        public const string LoaderSignature = "PriorPredictor";
+        internal const string LoaderSignature = "PriorPredictor";
         private static VersionInfo GetVersionInfo()
         {
             return new VersionInfo(
@@ -360,13 +365,18 @@ namespace Microsoft.ML.Runtime.Learners
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(PriorPredictor).Assembly.FullName);
+                loaderAssemblyName: typeof(PriorModelParameters).Assembly.FullName);
         }
 
         private readonly float _prob;
         private readonly float _raw;
 
-        public PriorPredictor(IHostEnvironment env, float prob)
+        /// <summary>
+        /// Instantiates a model that returns the prior probability of the positive class in the training set.
+        /// </summary>
+        /// <param name="env">The host environment.</param>
+        /// <param name="prob">The probability of the positive class.</param>
+        public PriorModelParameters(IHostEnvironment env, float prob)
             : base(env, LoaderSignature)
         {
             Host.Check(!float.IsNaN(prob));
@@ -374,10 +384,10 @@ namespace Microsoft.ML.Runtime.Learners
             _prob = prob;
             _raw = 2 * _prob - 1;       // This could be other functions -- logodds for instance
 
-            InputType = new VectorType(NumberType.Float);
+            _inputType = new VectorType(NumberType.Float);
         }
 
-        private PriorPredictor(IHostEnvironment env, ModelLoadContext ctx)
+        private PriorModelParameters(IHostEnvironment env, ModelLoadContext ctx)
             : base(env, LoaderSignature, ctx)
         {
             // *** Binary format ***
@@ -388,18 +398,18 @@ namespace Microsoft.ML.Runtime.Learners
 
             _raw = 2 * _prob - 1;
 
-            InputType = new VectorType(NumberType.Float);
+            _inputType = new VectorType(NumberType.Float);
         }
 
-        public static PriorPredictor Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static PriorModelParameters Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
-            return new PriorPredictor(env, ctx);
+            return new PriorModelParameters(env, ctx);
         }
 
-        protected override void SaveCore(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             base.SaveCore(ctx);
             ctx.SetVersionInfo(GetVersionInfo());
@@ -411,13 +421,14 @@ namespace Microsoft.ML.Runtime.Learners
             ctx.Writer.Write(_prob);
         }
 
-        public override PredictionKind PredictionKind
-        { get { return PredictionKind.BinaryClassification; } }
-        public ColumnType InputType { get; }
-        public ColumnType OutputType => NumberType.Float;
-        public ColumnType DistType => NumberType.Float;
+        public override PredictionKind PredictionKind => PredictionKind.BinaryClassification;
 
-        public ValueMapper<TIn, TOut> GetMapper<TIn, TOut>()
+        private readonly ColumnType _inputType;
+        ColumnType IValueMapper.InputType => _inputType;
+        ColumnType IValueMapper.OutputType => NumberType.Float;
+        ColumnType IValueMapperDist.DistType => NumberType.Float;
+
+        ValueMapper<TIn, TOut> IValueMapper.GetMapper<TIn, TOut>()
         {
             Contracts.Check(typeof(TIn) == typeof(VBuffer<float>));
             Contracts.Check(typeof(TOut) == typeof(float));
@@ -426,7 +437,7 @@ namespace Microsoft.ML.Runtime.Learners
             return (ValueMapper<TIn, TOut>)(Delegate)del;
         }
 
-        public ValueMapper<TIn, TOut, TDist> GetMapper<TIn, TOut, TDist>()
+        ValueMapper<TIn, TOut, TDist> IValueMapperDist.GetMapper<TIn, TOut, TDist>()
         {
             Contracts.Check(typeof(TIn) == typeof(VBuffer<float>));
             Contracts.Check(typeof(TOut) == typeof(float));
@@ -436,12 +447,12 @@ namespace Microsoft.ML.Runtime.Learners
             return (ValueMapper<TIn, TOut, TDist>)(Delegate)del;
         }
 
-        private void Map(ref VBuffer<float> src, ref float dst)
+        private void Map(in VBuffer<float> src, ref float dst)
         {
             dst = _raw;
         }
 
-        private void MapDist(ref VBuffer<float> src, ref float score, ref float prob)
+        private void MapDist(in VBuffer<float> src, ref float score, ref float prob)
         {
             score = _raw;
             prob = _prob;

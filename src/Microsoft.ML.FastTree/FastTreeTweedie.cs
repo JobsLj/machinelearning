@@ -2,43 +2,43 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.FastTree;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
 using System;
 using System.Linq;
 using System.Text;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Trainers.FastTree;
+using Microsoft.ML.Training;
 
-[assembly: LoadableClass(FastTreeTweedieTrainer.Summary, typeof(FastTreeTweedieTrainer), typeof(FastTreeTweedieTrainer.Arguments),
+[assembly: LoadableClass(FastTreeTweedieTrainer.Summary, typeof(FastTreeTweedieTrainer), typeof(FastTreeTweedieTrainer.Options),
     new[] { typeof(SignatureRegressorTrainer), typeof(SignatureTrainer), typeof(SignatureTreeEnsembleTrainer), typeof(SignatureFeatureScorerTrainer) },
     FastTreeTweedieTrainer.UserNameValue,
     FastTreeTweedieTrainer.LoadNameValue,
     FastTreeTweedieTrainer.ShortName)]
 
-[assembly: LoadableClass(typeof(FastTreeTweediePredictor), null, typeof(SignatureLoadModel),
+[assembly: LoadableClass(typeof(FastTreeTweedieModelParameters), null, typeof(SignatureLoadModel),
     "FastTree Tweedie Regression Executor",
-    FastTreeTweediePredictor.LoaderSignature)]
+    FastTreeTweedieModelParameters.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
     // The Tweedie boosting model follows the mathematics established in:
     // Yang, Quan, and Zou. "Insurance Premium Prediction via Gradient Tree-Boosted Tweedie Compound Poisson Models."
     // https://arxiv.org/pdf/1508.06378.pdf
     /// <include file='doc.xml' path='doc/members/member[@name="FastTreeTweedieRegression"]/*' />
     public sealed partial class FastTreeTweedieTrainer
-         : BoostingFastTreeTrainerBase<FastTreeTweedieTrainer.Arguments, RegressionPredictionTransformer<FastTreeTweediePredictor>, FastTreeTweediePredictor>
+         : BoostingFastTreeTrainerBase<FastTreeTweedieTrainer.Options, RegressionPredictionTransformer<FastTreeTweedieModelParameters>, FastTreeTweedieModelParameters>
     {
-        public const string LoadNameValue = "FastTreeTweedieRegression";
-        public const string UserNameValue = "FastTree (Boosted Trees) Tweedie Regression";
-        public const string Summary = "Trains gradient boosted decision trees to fit target values using a Tweedie loss function. This learner is a generalization of Poisson, compound Poisson, and gamma regression.";
-        public const string ShortName = "fttweedie";
+        internal const string LoadNameValue = "FastTreeTweedieRegression";
+        internal const string UserNameValue = "FastTree (Boosted Trees) Tweedie Regression";
+        internal const string Summary = "Trains gradient boosted decision trees to fit target values using a Tweedie loss function. This learner is a generalization of Poisson, compound Poisson, and gamma regression.";
+        internal const string ShortName = "fttweedie";
 
         private TestHistory _firstTestSetHistory;
         private Test _trainRegressionTest;
@@ -54,12 +54,20 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <param name="env">The private instance of <see cref="IHostEnvironment"/>.</param>
         /// <param name="labelColumn">The name of the label column.</param>
         /// <param name="featureColumn">The name of the feature column.</param>
-        /// <param name="groupIdColumn">The name for the column containing the group ID. </param>
         /// <param name="weightColumn">The name for the column containing the initial weight.</param>
-        /// <param name="advancedSettings">A delegate to apply all the advanced arguments to the algorithm.</param>
-        public FastTreeTweedieTrainer(IHostEnvironment env, string labelColumn, string featureColumn,
-            string groupIdColumn = null, string weightColumn = null, Action<Arguments> advancedSettings = null)
-            : base(env, TrainerUtils.MakeR4ScalarLabel(labelColumn), featureColumn, weightColumn, groupIdColumn, advancedSettings)
+        /// <param name="learningRate">The learning rate.</param>
+        /// <param name="minDatapointsInLeaves">The minimal number of documents allowed in a leaf of a regression tree, out of the subsampled data.</param>
+        /// <param name="numLeaves">The max number of leaves in each regression tree.</param>
+        /// <param name="numTrees">Total number of decision trees to create in the ensemble.</param>
+        internal FastTreeTweedieTrainer(IHostEnvironment env,
+            string labelColumn = DefaultColumnNames.Label,
+            string featureColumn = DefaultColumnNames.Features,
+            string weightColumn = null,
+            int numLeaves = Defaults.NumLeaves,
+            int numTrees = Defaults.NumTrees,
+            int minDatapointsInLeaves = Defaults.MinDocumentsInLeaves,
+            double learningRate = Defaults.LearningRates)
+            : base(env, TrainerUtils.MakeR4ScalarColumn(labelColumn), featureColumn, weightColumn, null, numLeaves, numTrees, minDatapointsInLeaves, learningRate)
         {
             Host.CheckNonEmpty(labelColumn, nameof(labelColumn));
             Host.CheckNonEmpty(featureColumn, nameof(featureColumn));
@@ -68,19 +76,22 @@ namespace Microsoft.ML.Runtime.FastTree
         }
 
         /// <summary>
-        /// Initializes a new instance of <see cref="FastTreeTweedieTrainer"/> by using the legacy <see cref="Arguments"/> class.
+        /// Initializes a new instance of <see cref="FastTreeTweedieTrainer"/> by using the <see cref="Options"/> class.
         /// </summary>
-        internal FastTreeTweedieTrainer(IHostEnvironment env, Arguments args)
-            : base(env, args, TrainerUtils.MakeR4ScalarLabel(args.LabelColumn))
+        /// <param name="env">The instance of <see cref="IHostEnvironment"/>.</param>
+        /// <param name="options">Algorithm advanced settings.</param>
+        internal FastTreeTweedieTrainer(IHostEnvironment env, Options options)
+            : base(env, options, TrainerUtils.MakeR4ScalarColumn(options.LabelColumn))
         {
             Initialize();
         }
 
-        protected override FastTreeTweediePredictor TrainModelCore(TrainContext context)
+        private protected override FastTreeTweedieModelParameters TrainModelCore(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
             var trainData = context.TrainingSet;
             ValidData = context.ValidationSet;
+            TestData = context.TestSet;
 
             using (var ch = Host.Start("Training"))
             {
@@ -88,11 +99,11 @@ namespace Microsoft.ML.Runtime.FastTree
                 trainData.CheckRegressionLabel();
                 trainData.CheckFeatureFloatVector();
                 trainData.CheckOptFloatWeight();
-                FeatureCount = trainData.Schema.Feature.Type.ValueCount;
+                FeatureCount = trainData.Schema.Feature.Value.Type.GetValueCount();
                 ConvertData(trainData);
                 TrainCore(ch);
             }
-            return new FastTreeTweediePredictor(Host, TrainedEnsemble, FeatureCount, InnerArgs);
+            return new FastTreeTweedieModelParameters(Host, TrainedEnsemble, FeatureCount, InnerArgs);
         }
 
         protected override void CheckArgs(IChannel ch)
@@ -117,7 +128,7 @@ namespace Microsoft.ML.Runtime.FastTree
             return new ObjectiveImpl(TrainSet, Args);
         }
 
-        protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
+        private protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
         {
             OptimizationAlgorithm optimizationAlgorithm = base.ConstructOptimizationAlgorithm(ch);
             if (Args.UseLineSearch)
@@ -304,8 +315,11 @@ namespace Microsoft.ML.Runtime.FastTree
             PrintTestGraph(ch);
         }
 
-        protected override RegressionPredictionTransformer<FastTreeTweediePredictor> MakeTransformer(FastTreeTweediePredictor model, Schema trainSchema)
-         => new RegressionPredictionTransformer<FastTreeTweediePredictor>(Host, model, trainSchema, FeatureColumn.Name);
+        protected override RegressionPredictionTransformer<FastTreeTweedieModelParameters> MakeTransformer(FastTreeTweedieModelParameters model, Schema trainSchema)
+         => new RegressionPredictionTransformer<FastTreeTweedieModelParameters>(Host, model, trainSchema, FeatureColumn.Name);
+
+        public RegressionPredictionTransformer<FastTreeTweedieModelParameters> Train(IDataView trainData, IDataView validationData = null)
+            => TrainTransformer(trainData, validationData);
 
         protected override SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema)
         {
@@ -322,17 +336,17 @@ namespace Microsoft.ML.Runtime.FastTree
             private readonly Double _index2; // 2 minus the index parameter.
             private readonly Double _maxClamp;
 
-            public ObjectiveImpl(Dataset trainData, Arguments args)
+            public ObjectiveImpl(Dataset trainData, Options options)
                 : base(
                     trainData,
-                    args.LearningRates,
-                    args.Shrinkage,
-                    args.MaxTreeOutput,
-                    args.GetDerivativesSampleRate,
-                    args.BestStepRankingRegressionTrees,
-                    args.RngSeed)
+                    options.LearningRates,
+                    options.Shrinkage,
+                    options.MaxTreeOutput,
+                    options.GetDerivativesSampleRate,
+                    options.BestStepRankingRegressionTrees,
+                    options.RngSeed)
             {
-                if (args.DropoutRate > 0 && LearningRate > 0) // Don't do shrinkage if dropouts are used.
+                if (options.DropoutRate > 0 && LearningRate > 0) // Don't do shrinkage if dropouts are used.
                     Shrinkage = 1.0 / LearningRate;
 
                 _labels = GetDatasetRegressionLabels(trainData);
@@ -343,12 +357,12 @@ namespace Microsoft.ML.Runtime.FastTree
                         _labels[i] = 0;
                 }
 
-                _index1 = 1 - args.Index;
-                _index2 = 2 - args.Index;
-                _maxClamp = Math.Abs(args.MaxTreeOutput);
+                _index1 = 1 - options.Index;
+                _index2 = 2 - options.Index;
+                _maxClamp = Math.Abs(options.MaxTreeOutput);
             }
 
-            public void AdjustTreeOutputs(IChannel ch, RegressionTree tree, DocumentPartitioning partitioning, ScoreTracker trainingScores)
+            public void AdjustTreeOutputs(IChannel ch, InternalRegressionTree tree, DocumentPartitioning partitioning, ScoreTracker trainingScores)
             {
                 double shrinkage = LearningRate * Shrinkage;
                 var scores = trainingScores.Scores;
@@ -431,10 +445,10 @@ namespace Microsoft.ML.Runtime.FastTree
         }
     }
 
-    public sealed class FastTreeTweediePredictor : FastTreePredictionWrapper
+    public sealed class FastTreeTweedieModelParameters : TreeEnsembleModelParametersBasedOnRegressionTree
     {
-        public const string LoaderSignature = "FastTreeTweedieExec";
-        public const string RegistrationName = "FastTreeTweediePredictor";
+        internal const string LoaderSignature = "FastTreeTweedieExec";
+        internal const string RegistrationName = "FastTreeTweediePredictor";
 
         private static VersionInfo GetVersionInfo()
         {
@@ -446,7 +460,7 @@ namespace Microsoft.ML.Runtime.FastTree
                 verReadableCur: 0x00010002,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(FastTreeTweediePredictor).Assembly.FullName);
+                loaderAssemblyName: typeof(FastTreeTweedieModelParameters).Assembly.FullName);
         }
 
         protected override uint VerNumFeaturesSerialized => 0x00010001;
@@ -455,36 +469,36 @@ namespace Microsoft.ML.Runtime.FastTree
 
         protected override uint VerCategoricalSplitSerialized => 0x00010003;
 
-        internal FastTreeTweediePredictor(IHostEnvironment env, Ensemble trainedEnsemble, int featureCount, string innerArgs)
+        internal FastTreeTweedieModelParameters(IHostEnvironment env, InternalTreeEnsemble trainedEnsemble, int featureCount, string innerArgs)
             : base(env, RegistrationName, trainedEnsemble, featureCount, innerArgs)
         {
         }
 
-        private FastTreeTweediePredictor(IHostEnvironment env, ModelLoadContext ctx)
+        private FastTreeTweedieModelParameters(IHostEnvironment env, ModelLoadContext ctx)
             : base(env, RegistrationName, ctx, GetVersionInfo())
         {
         }
 
-        protected override void SaveCore(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             base.SaveCore(ctx);
             ctx.SetVersionInfo(GetVersionInfo());
         }
 
-        public static FastTreeTweediePredictor Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static FastTreeTweedieModelParameters Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
-            return new FastTreeTweediePredictor(env, ctx);
+            return new FastTreeTweedieModelParameters(env, ctx);
         }
 
-        protected override void Map(ref VBuffer<float> src, ref float dst)
+        protected override void Map(in VBuffer<float> src, ref float dst)
         {
             // The value learnt and predicted by the trees is the log of the expected value,
             // as seen in equation 9 of the paper. So for the actual prediction, we take its
             // exponent.
-            base.Map(ref src, ref dst);
+            base.Map(in src, ref dst);
             // REVIEW: Some packages like R's GBM apparently clamp the input to the exponent
             // in the range [-19, 19]. We have historically taken a dim view of this sort of thing
             // ourselves, but if our views prove problematic we can reconsider. (An upper clamp of 19
@@ -495,21 +509,20 @@ namespace Microsoft.ML.Runtime.FastTree
         public override PredictionKind PredictionKind => PredictionKind.Regression;
     }
 
-    public static partial class FastTree
+    internal static partial class FastTree
     {
         [TlcModule.EntryPoint(Name = "Trainers.FastTreeTweedieRegressor",
             Desc = FastTreeTweedieTrainer.Summary,
             UserName = FastTreeTweedieTrainer.UserNameValue,
-            ShortName = FastTreeTweedieTrainer.ShortName,
-            XmlInclude = new [] { @"<include file='../Microsoft.ML.FastTree/doc.xml' path='doc/members/member[@name=""FastTreeTweedieRegression""]/*' />" })]
-        public static CommonOutputs.RegressionOutput TrainTweedieRegression(IHostEnvironment env, FastTreeTweedieTrainer.Arguments input)
+            ShortName = FastTreeTweedieTrainer.ShortName)]
+        public static CommonOutputs.RegressionOutput TrainTweedieRegression(IHostEnvironment env, FastTreeTweedieTrainer.Options input)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register("TrainTweeedie");
             host.CheckValue(input, nameof(input));
             EntryPointUtils.CheckInputArgs(host, input);
 
-            return LearnerEntryPointsUtils.Train<FastTreeTweedieTrainer.Arguments, CommonOutputs.RegressionOutput>(host, input,
+            return LearnerEntryPointsUtils.Train<FastTreeTweedieTrainer.Options, CommonOutputs.RegressionOutput>(host, input,
                 () => new FastTreeTweedieTrainer(host, input),
                 () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.LabelColumn),
                 () => LearnerEntryPointsUtils.FindColumn(host, input.TrainingData.Schema, input.WeightColumn),

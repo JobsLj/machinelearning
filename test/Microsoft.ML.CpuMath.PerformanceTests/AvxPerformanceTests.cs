@@ -5,12 +5,14 @@
 using System;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
-using Microsoft.ML.Runtime.Internal.CpuMath;
+using Microsoft.ML.Internal.CpuMath;
 
 namespace Microsoft.ML.CpuMath.PerformanceTests
 {
     public class AvxPerformanceTests : PerformanceTests
     {
+        protected override int align { get; set; } = 32;
+
         [Benchmark]
         public void AddScalarU()
             => AvxIntrinsics.AddScalarU(DefaultScale, new Span<float>(dst, 0, Length));
@@ -55,8 +57,8 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             => AvxIntrinsics.MulElementWiseU(src1, src2, dst, Length);
 
         [Benchmark]
-        public float SumU()
-            => AvxIntrinsics.SumU(new Span<float>(src, 0, Length));
+        public float Sum()
+            => AvxIntrinsics.Sum(new Span<float>(src, 0, Length));
 
         [Benchmark]
         [BenchmarkCategory("Fma")]
@@ -108,13 +110,19 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
         [BenchmarkCategory("Fma")]
         public void SdcaL1UpdateSU()
             => AvxIntrinsics.SdcaL1UpdateSU(DefaultScale, IndexLength, src, idx, DefaultScale, dst, result);
-        [Benchmark]
-        [BenchmarkCategory("Fma")]
-        public void MatMulX()
-            => AvxIntrinsics.MatMulX(src, src1, dst, 1000, 1000);
 
         [Benchmark]
-        public void MatMulTranX()
-            => AvxIntrinsics.MatMulTranX(src, src1, dst, 1000, 1000);
+        [BenchmarkCategory("Fma")]
+        public void MatMul()
+            => AvxIntrinsics.MatMul(testMatrixAligned, testSrcVectorAligned, testDstVectorAligned, matrixLength, matrixLength);
+        
+        [Benchmark]
+        public void MatMulTran()
+            => AvxIntrinsics.MatMulTran(testMatrixAligned, testSrcVectorAligned, testDstVectorAligned, matrixLength, matrixLength);
+
+        [Benchmark]
+        [BenchmarkCategory("Fma")]
+        public void MatMulP()
+            => AvxIntrinsics.MatMulP(testMatrixAligned, matrixIdx, testSrcVectorAligned, 0, 0, MatrixIndexLength, testDstVectorAligned, matrixLength, matrixLength);
     }
 }

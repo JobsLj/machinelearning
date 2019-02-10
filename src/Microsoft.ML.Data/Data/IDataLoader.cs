@@ -2,17 +2,18 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.IO;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Model;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// An interface for exposing some number of items that can be opened for reading.
+    /// </summary>
     /// REVIEW: Reconcile this with the functionality exposed by IHostEnvironment. For example,
     /// we could simply replace this with an array of IFileHandle.
-    /// </summary>
+
     public interface IMultiStreamSource
     {
         /// <summary>
@@ -32,32 +33,37 @@ namespace Microsoft.ML.Runtime.Data
 
         /// <summary>
         /// Opens the indicated item and returns a text stream reader on it.
-        /// REVIEW: Consider making this an extension method.
         /// </summary>
+        /// REVIEW: Consider making this an extension method.
         TextReader OpenTextReader(int index);
     }
 
     /// <summary>
     /// Signature for creating an <see cref="IDataLoader"/>.
     /// </summary>
-    public delegate void SignatureDataLoader(IMultiStreamSource data);
+    [BestFriend]
+    internal delegate void SignatureDataLoader(IMultiStreamSource data);
 
     /// <summary>
     /// Signature for loading an <see cref="IDataLoader"/>.
     /// </summary>
-    public delegate void SignatureLoadDataLoader(ModelLoadContext ctx, IMultiStreamSource data);
+    [BestFriend]
+    internal delegate void SignatureLoadDataLoader(ModelLoadContext ctx, IMultiStreamSource data);
 
     /// <summary>
     /// Interface for a data loader. An <see cref="IDataLoader"/> can save its model information
     /// and is instantiatable from arguments and an <see cref="IMultiStreamSource"/> .
     /// </summary>
-    public interface IDataLoader : IDataView, ICanSaveModel
+    [BestFriend]
+    internal interface IDataLoader : IDataView, ICanSaveModel
     {
     }
 
-    public delegate void SignatureDataSaver();
+    [BestFriend]
+    internal delegate void SignatureDataSaver();
 
-    public interface IDataSaver
+    [BestFriend]
+    internal interface IDataSaver
     {
         /// <summary>
         /// Check if the column can be saved.
@@ -77,18 +83,21 @@ namespace Microsoft.ML.Runtime.Data
     /// <summary>
     /// Signature for creating an <see cref="IDataTransform"/>.
     /// </summary>
-    public delegate void SignatureDataTransform(IDataView input);
+    [BestFriend]
+    internal delegate void SignatureDataTransform(IDataView input);
 
     /// <summary>
     /// Signature for loading an <see cref="IDataTransform"/>.
     /// </summary>
-    public delegate void SignatureLoadDataTransform(ModelLoadContext ctx, IDataView input);
+    [BestFriend]
+    internal delegate void SignatureLoadDataTransform(ModelLoadContext ctx, IDataView input);
 
     /// <summary>
     /// Interface for a data transform. An <see cref="IDataTransform"/> can save its model information
     /// and is instantiatable from arguments and an input <see cref="IDataView"/>.
     /// </summary>
-    public interface IDataTransform : IDataView, ICanSaveModel
+    [BestFriend]
+    internal interface IDataTransform : IDataView, ICanSaveModel
     {
         IDataView Source { get; }
     }
@@ -97,7 +106,8 @@ namespace Microsoft.ML.Runtime.Data
     /// Data transforms need to be able to apply themselves to a different input IDataView.
     /// This interface allows them to implement custom rebinding logic.
     /// </summary>
-    public interface ITransformTemplate : IDataTransform
+    [BestFriend]
+    internal interface ITransformTemplate : IDataTransform
     {
         // REVIEW: re-apply operation should support shallow schema modification,
         // like renaming source and destination columns.

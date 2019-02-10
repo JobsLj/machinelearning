@@ -2,36 +2,39 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.FastTree;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
 using System;
 using System.Threading.Tasks;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Calibrator;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Model;
+using Microsoft.ML.Trainers.FastTree;
+using Microsoft.ML.Training;
 
 [assembly: LoadableClass(BinaryClassificationGamTrainer.Summary,
-    typeof(BinaryClassificationGamTrainer), typeof(BinaryClassificationGamTrainer.Arguments),
+    typeof(BinaryClassificationGamTrainer), typeof(BinaryClassificationGamTrainer.Options),
     new[] { typeof(SignatureBinaryClassifierTrainer), typeof(SignatureTrainer), typeof(SignatureFeatureScorerTrainer) },
     BinaryClassificationGamTrainer.UserNameValue,
     BinaryClassificationGamTrainer.LoadNameValue,
     BinaryClassificationGamTrainer.ShortName, DocName = "trainer/GAM.md")]
 
-[assembly: LoadableClass(typeof(IPredictorProducing<float>), typeof(BinaryClassGamPredictor), null, typeof(SignatureLoadModel),
+[assembly: LoadableClass(typeof(IPredictorProducing<float>), typeof(BinaryClassificationGamModelParameters), null, typeof(SignatureLoadModel),
     "GAM Binary Class Predictor",
-    BinaryClassGamPredictor.LoaderSignature)]
+    BinaryClassificationGamModelParameters.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
     public sealed class BinaryClassificationGamTrainer :
-    GamTrainerBase<BinaryClassificationGamTrainer.Arguments, BinaryPredictionTransformer<IPredictorProducing<float>>, IPredictorProducing<float>>
+        GamTrainerBase<BinaryClassificationGamTrainer.Options,
+        BinaryPredictionTransformer<CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator>>,
+        CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator>>
     {
-        public sealed class Arguments : ArgumentsBase
+        public sealed class Options : ArgumentsBase
         {
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Should we use derivatives optimized for unbalanced sets", ShortName = "us")]
             [TGUI(Label = "Optimize for unbalanced")]
@@ -49,8 +52,8 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <summary>
         /// Initializes a new instance of <see cref="BinaryClassificationGamTrainer"/>
         /// </summary>
-        internal BinaryClassificationGamTrainer(IHostEnvironment env, Arguments args)
-             : base(env, args, LoadNameValue, TrainerUtils.MakeBoolScalarLabel(args.LabelColumn))
+        internal BinaryClassificationGamTrainer(IHostEnvironment env, Options options)
+             : base(env, options, LoadNameValue, TrainerUtils.MakeBoolScalarLabel(options.LabelColumn))
         {
             _sigmoidParameter = 1;
         }
@@ -62,17 +65,22 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <param name="labelColumn">The name of the label column.</param>
         /// <param name="featureColumn">The name of the feature column.</param>
         /// <param name="weightColumn">The name for the column containing the initial weight.</param>
-        /// <param name="advancedSettings">A delegate to apply all the advanced arguments to the algorithm.</param>
-        public BinaryClassificationGamTrainer(IHostEnvironment env, string labelColumn, string featureColumn, string weightColumn = null, Action<Arguments> advancedSettings = null)
-            : base(env, LoadNameValue, TrainerUtils.MakeBoolScalarLabel(labelColumn), featureColumn, weightColumn, advancedSettings)
+        /// <param name="numIterations">The number of iterations to use in learning the features.</param>
+        /// <param name="learningRate">The learning rate. GAMs work best with a small learning rate.</param>
+        /// <param name="maxBins">The maximum number of bins to use to approximate features</param>
+        internal BinaryClassificationGamTrainer(IHostEnvironment env,
+            string labelColumn = DefaultColumnNames.Label,
+            string featureColumn = DefaultColumnNames.Features,
+            string weightColumn = null,
+            int numIterations = GamDefaults.NumIterations,
+            double learningRate = GamDefaults.LearningRates,
+            int maxBins = GamDefaults.MaxBins)
+            : base(env, LoadNameValue, TrainerUtils.MakeBoolScalarLabel(labelColumn), featureColumn, weightColumn, numIterations, learningRate, maxBins)
         {
-            Host.CheckNonEmpty(labelColumn, nameof(labelColumn));
-            Host.CheckNonEmpty(featureColumn, nameof(featureColumn));
-
             _sigmoidParameter = 1;
         }
 
-        internal override void CheckLabel(RoleMappedData data)
+        private protected override void CheckLabel(RoleMappedData data)
         {
             data.CheckBinaryLabel();
         }
@@ -96,14 +104,13 @@ namespace Microsoft.ML.Runtime.FastTree
             Parallel.Invoke(new ParallelOptions { MaxDegreeOfParallelism = BlockingThreadPool.NumThreads }, actions);
             return boolArray;
         }
-
-        protected override IPredictorProducing<float> TrainModelCore(TrainContext context)
+        private protected override CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator> TrainModelCore(TrainContext context)
         {
             TrainBase(context);
-            var predictor = new BinaryClassGamPredictor(Host, InputLength, TrainSet,
-                MeanEffect, BinEffects, FeatureMap);
+            var predictor = new BinaryClassificationGamModelParameters(Host,
+                BinUpperBounds, BinEffects, MeanEffect, InputLength, FeatureMap);
             var calibrator = new PlattCalibrator(Host, -1.0 * _sigmoidParameter, 0);
-            return new CalibratedPredictor(Host, predictor, calibrator);
+            return new ValueMapperCalibratedModelParameters<BinaryClassificationGamModelParameters, PlattCalibrator>(Host, predictor, calibrator);
         }
 
         protected override ObjectiveFunctionBase CreateObjectiveFunction()
@@ -132,8 +139,12 @@ namespace Microsoft.ML.Runtime.FastTree
             PruningTest = new TestHistory(validTest, PruningLossIndex);
         }
 
-        protected override BinaryPredictionTransformer<IPredictorProducing<float>> MakeTransformer(IPredictorProducing<float> model, Schema trainSchema)
-            => new BinaryPredictionTransformer<IPredictorProducing<float>>(Host, model, trainSchema, FeatureColumn.Name);
+        protected override BinaryPredictionTransformer<CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator>>
+            MakeTransformer(CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator> model, Schema trainSchema)
+            => new BinaryPredictionTransformer<CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator>>(Host, model, trainSchema, FeatureColumn.Name);
+
+        public BinaryPredictionTransformer<CalibratedModelParametersBase<BinaryClassificationGamModelParameters, PlattCalibrator>> Train(IDataView trainData, IDataView validationData = null)
+            => TrainTransformer(trainData, validationData);
 
         protected override SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema)
         {
@@ -146,49 +157,66 @@ namespace Microsoft.ML.Runtime.FastTree
         }
     }
 
-    public class BinaryClassGamPredictor : GamPredictorBase, IPredictorProducing<float>
+    /// <summary>
+    /// The model parameters class for Binary Classification GAMs
+    /// </summary>
+    public sealed class BinaryClassificationGamModelParameters : GamModelParametersBase, IPredictorProducing<float>
     {
-        public const string LoaderSignature = "BinaryClassGamPredictor";
+        internal const string LoaderSignature = "BinaryClassGamPredictor";
         public override PredictionKind PredictionKind => PredictionKind.BinaryClassification;
 
-        public BinaryClassGamPredictor(IHostEnvironment env, int inputLength, Dataset trainset,
-            double meanEffect, double[][] binEffects, int[] featureMap)
-            : base(env, LoaderSignature, inputLength, trainset, meanEffect, binEffects, featureMap) { }
+        /// <summary>
+        /// Construct a new Binary Classification GAM with the defined properties.
+        /// </summary>
+        /// <param name="env">The Host Environment</param>
+        /// <param name="binUpperBounds">An array of arrays of bin-upper-bounds for each feature.</param>
+        /// <param name="binEffects">Anay array of arrays of effect sizes for each bin for each feature.</param>
+        /// <param name="intercept">The intercept term for the model. Also referred to as the bias or the mean effect.</param>
+        /// <param name="inputLength">The number of features passed from the dataset. Used when the number of input features is
+        /// different than the number of shape functions. Use default if all features have a shape function.</param>
+        /// <param name="featureToInputMap">A map from the feature shape functions (as described by the binUpperBounds and BinEffects)
+        /// to the input feature. Used when the number of input features is different than the number of shape functions. Use default if all features have
+        /// a shape function.</param>
+        public BinaryClassificationGamModelParameters(IHostEnvironment env,
+            double[][] binUpperBounds, double[][] binEffects, double intercept, int inputLength, int[] featureToInputMap)
+            : base(env, LoaderSignature, binUpperBounds, binEffects, intercept, inputLength, featureToInputMap) { }
 
-        private BinaryClassGamPredictor(IHostEnvironment env, ModelLoadContext ctx)
+        private BinaryClassificationGamModelParameters(IHostEnvironment env, ModelLoadContext ctx)
             : base(env, LoaderSignature, ctx) { }
 
-        public static VersionInfo GetVersionInfo()
+        private static VersionInfo GetVersionInfo()
         {
             return new VersionInfo(
                 modelSignature: "GAM BINP",
-                verWrittenCur: 0x00010001,
-                verReadableCur: 0x00010001,
+                // verWrittenCur: 0x00010001, // Initial
+                // verWrittenCur: 0x00010001, // Added Intercept but collided from release 0.6-0.9
+                verWrittenCur: 0x00010002,    // Added Intercept (version revved to address collisions)
+                verReadableCur: 0x00010002,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(BinaryClassGamPredictor).Assembly.FullName);
+                loaderAssemblyName: typeof(BinaryClassificationGamModelParameters).Assembly.FullName);
         }
 
-        public static IPredictorProducing<float> Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static IPredictorProducing<float> Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
 
-            var predictor = new BinaryClassGamPredictor(env, ctx);
+            var predictor = new BinaryClassificationGamModelParameters(env, ctx);
             ICalibrator calibrator;
             ctx.LoadModelOrNull<ICalibrator, SignatureLoadModel>(env, out calibrator, @"Calibrator");
             if (calibrator == null)
                 return predictor;
-            return new SchemaBindableCalibratedPredictor(env, predictor, calibrator);
+            return new SchemaBindableCalibratedModelParameters<BinaryClassificationGamModelParameters, ICalibrator>(env, predictor, calibrator);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
             ctx.SetVersionInfo(GetVersionInfo());
-            base.Save(ctx);
+            base.SaveCore(ctx);
         }
     }
 }

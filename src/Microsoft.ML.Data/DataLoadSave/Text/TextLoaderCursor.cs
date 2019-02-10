@@ -2,22 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text;
 using System.Threading;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using System.Threading.Tasks;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     public sealed partial class TextLoader
     {
-        private sealed class Cursor : RootCursorBase, IRowCursor
+        private sealed class Cursor : RootCursorBase
         {
             // Lines are divided into batches and processed a batch at a time. This enables
             // parallel parsing.
@@ -49,7 +47,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 // Note that files is allowed to be empty.
                 Contracts.AssertValue(parent);
-                Contracts.Assert(active == null || active.Length == parent._bindings.Infos.Length);
+                Contracts.Assert(active == null || active.Length == parent._bindings.OutputSchema.Count);
 
                 var bindings = parent._bindings;
 
@@ -87,7 +85,7 @@ namespace Microsoft.ML.Runtime.Data
             private Cursor(TextLoader parent, ParseStats stats, bool[] active, LineReader reader, int srcNeeded, int cthd)
                 : base(parent._host)
             {
-                Ch.Assert(active == null || active.Length == parent._bindings.Infos.Length);
+                Ch.Assert(active == null || active.Length == parent._bindings.OutputSchema.Count);
                 Ch.AssertValue(reader);
                 Ch.AssertValue(stats);
                 Ch.Assert(srcNeeded >= 0);
@@ -136,12 +134,12 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public static IRowCursor Create(TextLoader parent, IMultiStreamSource files, bool[] active)
+            public static RowCursor Create(TextLoader parent, IMultiStreamSource files, bool[] active)
             {
                 // Note that files is allowed to be empty.
                 Contracts.AssertValue(parent);
                 Contracts.AssertValue(files);
-                Contracts.Assert(active == null || active.Length == parent._bindings.Infos.Length);
+                Contracts.Assert(active == null || active.Length == parent._bindings.OutputSchema.Count);
 
                 int srcNeeded;
                 int cthd;
@@ -153,13 +151,12 @@ namespace Microsoft.ML.Runtime.Data
                 return new Cursor(parent, stats, active, reader, srcNeeded, cthd);
             }
 
-            public static IRowCursor[] CreateSet(out IRowCursorConsolidator consolidator,
-                TextLoader parent, IMultiStreamSource files, bool[] active, int n)
+            public static RowCursor[] CreateSet(TextLoader parent, IMultiStreamSource files, bool[] active, int n)
             {
                 // Note that files is allowed to be empty.
                 Contracts.AssertValue(parent);
                 Contracts.AssertValue(files);
-                Contracts.Assert(active == null || active.Length == parent._bindings.Infos.Length);
+                Contracts.Assert(active == null || active.Length == parent._bindings.OutputSchema.Count);
 
                 int srcNeeded;
                 int cthd;
@@ -169,13 +166,9 @@ namespace Microsoft.ML.Runtime.Data
                 var reader = new LineReader(files, BatchSize, 100, parent.HasHeader, parent._maxRows, cthd);
                 var stats = new ParseStats(parent._host, cthd);
                 if (cthd <= 1)
-                {
-                    consolidator = null;
-                    return new IRowCursor[1] { new Cursor(parent, stats, active, reader, srcNeeded, 1) };
-                }
+                    return new RowCursor[1] { new Cursor(parent, stats, active, reader, srcNeeded, 1) };
 
-                consolidator = new Consolidator(cthd);
-                var cursors = new IRowCursor[cthd];
+                var cursors = new RowCursor[cthd];
                 try
                 {
                     for (int i = 0; i < cursors.Length; i++)
@@ -202,13 +195,13 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public override ValueGetter<UInt128> GetIdGetter()
+            public override ValueGetter<RowId> GetIdGetter()
             {
                 return
-                    (ref UInt128 val) =>
+                    (ref RowId val) =>
                     {
-                        Ch.Check(IsGood, "Cannot call ID getter in current state");
-                        val = new UInt128((ulong)_total, 0);
+                        Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                        val = new RowId((ulong)_total, 0);
                     };
             }
 
@@ -276,24 +269,24 @@ namespace Microsoft.ML.Runtime.Data
                 return sb.ToString();
             }
 
-            public Schema Schema => _bindings.AsSchema;
+            public override Schema Schema => _bindings.OutputSchema;
 
-            public override void Dispose()
+            protected override void Dispose(bool disposing)
             {
                 if (_disposed)
                     return;
-
+                if (disposing)
+                {
+                    _ator.Dispose();
+                    _reader.Release();
+                    _stats.Release();
+                }
                 _disposed = true;
-                _ator.Dispose();
-                _reader.Release();
-                _stats.Release();
-                base.Dispose();
+                base.Dispose(disposing);
             }
 
             protected override bool MoveNextCore()
             {
-                Contracts.Assert(State != CursorState.Done);
-
                 if (_ator.MoveNext())
                 {
                     _rows.Index = _ator.Current;
@@ -304,13 +297,13 @@ namespace Microsoft.ML.Runtime.Data
                 return false;
             }
 
-            public bool IsColumnActive(int col)
+            public override bool IsColumnActive(int col)
             {
                 Ch.Check(0 <= col && col < _bindings.Infos.Length);
                 return _active == null || _active[col];
             }
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            public override ValueGetter<TValue> GetGetter<TValue>(int col)
             {
                 Ch.Check(IsColumnActive(col));
                 var fn = _getters[col] as ValueGetter<TValue>;
@@ -347,7 +340,7 @@ namespace Microsoft.ML.Runtime.Data
             // abort situations.
             private const int TimeOut = 100;
 
-            private struct LineBatch
+            private readonly struct LineBatch
             {
                 public readonly string Path;
                 // Total lines, up to the first line of this batch.
@@ -378,7 +371,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            private struct LineInfo
+            private readonly struct LineInfo
             {
                 public readonly long Line;
                 public readonly string Text;
@@ -403,7 +396,7 @@ namespace Microsoft.ML.Runtime.Data
                 // The line reader can be referenced by multiple workers. This is the reference count.
                 private int _cref;
                 private BlockingCollection<LineBatch> _queue;
-                private Thread _thdRead;
+                private Task _thdRead;
                 private volatile bool _abort;
 
                 public LineReader(IMultiStreamSource files, int batchSize, int bufSize, bool hasHeader, long limit, int cref)
@@ -423,8 +416,7 @@ namespace Microsoft.ML.Runtime.Data
                     _cref = cref;
 
                     _queue = new BlockingCollection<LineBatch>(bufSize);
-                    _thdRead = Utils.CreateBackgroundThread(ThreadProc);
-                    _thdRead.Start();
+                    _thdRead = Utils.RunOnBackgroundThread(ThreadProc);
                 }
 
                 public void Release()
@@ -438,7 +430,7 @@ namespace Microsoft.ML.Runtime.Data
                     if (_thdRead != null)
                     {
                         _abort = true;
-                        _thdRead.Join();
+                        _thdRead.Wait();
                         _thdRead = null;
                     }
 
@@ -451,27 +443,14 @@ namespace Microsoft.ML.Runtime.Data
 
                 public LineBatch GetBatch()
                 {
-                    Exception inner = null;
-                    try
-                    {
-                        var batch = _queue.Take();
-                        if (batch.Exception == null)
-                            return batch;
-                        inner = batch.Exception;
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // This code detects when there is no more content by catching the exception thrown by _queue.Take() at the end.
-                        // If _queue.IsAddingCompleted is true, we know that this exception was the result of that specifically.
-                        // This should probably be re-engineered to not rely on exception blocks.
-                        // REVIEW: Come up with a less strange scheme for the interthread communication here, that does not
-                        // rely on exceptions and timeouts throughout the pipeline.
-                        if (_queue.IsAddingCompleted)
-                            return default(LineBatch);
-                        throw;
-                    }
-                    Contracts.AssertValue(inner);
-                    throw Contracts.ExceptDecode(inner, "Stream reading encountered exception");
+                    if (!_queue.TryTake(out LineBatch batch, millisecondsTimeout: -1))
+                        return default;
+
+                    if (batch.Exception == null)
+                        return batch;
+
+                    Contracts.AssertValue(batch.Exception);
+                    throw Contracts.ExceptDecode(batch.Exception, "Stream reading encountered exception");
                 }
 
                 private void ThreadProc()
@@ -661,7 +640,7 @@ namespace Microsoft.ML.Runtime.Data
                 // A small capacity blocking collection that the main cursor thread consumes.
                 private readonly BlockingCollection<RowBatch> _queue;
 
-                private readonly Thread[] _threads;
+                private readonly Task[] _threads;
 
                 // Number of threads still running.
                 private int _threadsRunning;
@@ -696,13 +675,12 @@ namespace Microsoft.ML.Runtime.Data
                     // a range that is being served up by the cursor.
                     _queue = new BlockingCollection<RowBatch>(2);
 
-                    _threads = new Thread[cthd];
+                    _threads = new Task[cthd];
                     _threadsRunning = cthd;
 
                     for (int tid = 0; tid < _threads.Length; tid++)
                     {
-                        var thd = _threads[tid] = Utils.CreateBackgroundThread(ThreadProc);
-                        thd.Start(tid);
+                        _threads[tid] = Utils.RunOnBackgroundThread(ThreadProc, tid);
                     }
                 }
 
@@ -710,8 +688,7 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     // Signal all the threads to shut down and wait for them.
                     Quit();
-                    for (int i = 0; i < _threads.Length; i++)
-                        _threads[i].Join();
+                    Task.WaitAll(_threads);
                 }
 
                 private void Quit()
@@ -819,37 +796,6 @@ namespace Microsoft.ML.Runtime.Data
                         if (iblk >= _blockCount)
                             iblk -= _blockCount;
                         Contracts.Assert(0 <= iblk && iblk < _blockCount);
-                    }
-                }
-            }
-
-            /// <summary>
-            /// The consolidator object. This simply records the number of threads and checks
-            /// that they match at the end.
-            /// </summary>
-            private sealed class Consolidator : IRowCursorConsolidator
-            {
-                private int _cthd;
-
-                public Consolidator(int cthd)
-                {
-                    Contracts.Assert(cthd > 1);
-                    _cthd = cthd;
-                }
-
-                public IRowCursor CreateCursor(IChannelProvider provider, IRowCursor[] inputs)
-                {
-                    Contracts.AssertValue(provider);
-                    int cthd = Interlocked.Exchange(ref _cthd, 0);
-                    provider.Check(cthd > 1, "Consolidator can only be used once");
-                    provider.Check(Utils.Size(inputs) == cthd, "Unexpected number of cursors");
-
-                    // ConsolidateGeneric does all the standard validity checks: all cursors non-null,
-                    // all have the same schema, all have the same active columns, and all active
-                    // column types are cachable.
-                    using (var ch = provider.Start("Consolidator"))
-                    {
-                        return DataViewUtils.ConsolidateGeneric(provider, inputs, BatchSize);
                     }
                 }
             }

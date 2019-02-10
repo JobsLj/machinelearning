@@ -2,14 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
-using Float = System.Single;
-
 using System;
 using System.Threading;
+using Float = System.Single;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     // REVIEW: Need better names for these and possibly a distinct namespace. These are too
     // specialized to have such prominent fully qualified names.
@@ -26,9 +23,9 @@ namespace Microsoft.ML.Runtime.Data
         {
             get
             {
-                if (_instance == null)
-                    Interlocked.CompareExchange(ref _instance, new TextCombiner(), null);
-                return _instance;
+                return _instance ??
+                    Interlocked.CompareExchange(ref _instance, new TextCombiner(), null) ??
+                    _instance;
             }
         }
 
@@ -51,9 +48,9 @@ namespace Microsoft.ML.Runtime.Data
         {
             get
             {
-                if (_instance == null)
-                    Interlocked.CompareExchange(ref _instance, new FloatAdder(), null);
-                return _instance;
+                return _instance ??
+                    Interlocked.CompareExchange(ref _instance, new FloatAdder(), null) ??
+                    _instance;
             }
         }
 
@@ -93,9 +90,9 @@ namespace Microsoft.ML.Runtime.Data
         {
             get
             {
-                if (_instance == null)
-                    Interlocked.CompareExchange(ref _instance, new R8Adder(), null);
-                return _instance;
+                return _instance ??
+                    Interlocked.CompareExchange(ref _instance, new R8Adder(), null) ??
+                    _instance;
             }
         }
 
@@ -115,9 +112,9 @@ namespace Microsoft.ML.Runtime.Data
         {
             get
             {
-                if (_instance == null)
-                    Interlocked.CompareExchange(ref _instance, new U4Adder(), null);
-                return _instance;
+                return _instance ??
+                    Interlocked.CompareExchange(ref _instance, new U4Adder(), null) ??
+                    _instance;
             }
         }
 

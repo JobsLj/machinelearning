@@ -9,15 +9,17 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Text;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 using Parquet;
 using Parquet.Data;
 using Parquet.File.Values.Primitives;
+using DataViewSchema = Microsoft.Data.DataView.Schema;
 
 [assembly: LoadableClass(ParquetLoader.Summary, typeof(ParquetLoader), typeof(ParquetLoader.Arguments), typeof(SignatureDataLoader),
     ParquetLoader.LoaderName, ParquetLoader.LoaderSignature, ParquetLoader.ShortName)]
@@ -25,12 +27,13 @@ using Parquet.File.Values.Primitives;
 [assembly: LoadableClass(ParquetLoader.Summary, typeof(ParquetLoader), null, typeof(SignatureLoadDataLoader),
     ParquetLoader.LoaderName, ParquetLoader.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// Loads a parquet file into an IDataView. Supports basic mapping from Parquet input column data types to framework data types.
     /// </summary>
-    public sealed class ParquetLoader : IDataLoader, IDisposable
+    [BestFriend]
+    internal sealed class ParquetLoader : IDataLoader, IDisposable
     {
         /// <summary>
         /// A Column is a singular representation that consolidates all the related column chunks in the
@@ -310,12 +313,13 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="ectx">The exception context.</param>
         /// <param name="cols">The columns.</param>
         /// <returns>The resulting schema.</returns>
-        private Schema CreateSchema(IExceptionContext ectx, Column[] cols)
+        private Microsoft.Data.DataView.Schema CreateSchema(IExceptionContext ectx, Column[] cols)
         {
             Contracts.AssertValue(ectx);
             Contracts.AssertValue(cols);
-
-            return new Schema(cols.Select(c => new Schema.Column(c.Name, c.ColType, null)));
+            var builder = new SchemaBuilder();
+            builder.AddColumns(cols.Select(c => new Microsoft.Data.DataView.Schema.DetachedColumn(c.Name, c.ColType, null)));
+            return builder.GetSchema();
         }
 
         /// <summary>
@@ -382,29 +386,27 @@ namespace Microsoft.ML.Runtime.Data
 
         public bool CanShuffle => true;
 
-        public Schema Schema { get; }
+        public DataViewSchema Schema { get; }
 
-        public long? GetRowCount(bool lazy = true)
+        public long? GetRowCount()
         {
             return _rowCount;
         }
 
-        public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
+        public RowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columnsNeeded, Random rand = null)
         {
-            _host.CheckValue(predicate, nameof(predicate));
             _host.CheckValueOrNull(rand);
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, Schema);
             return new Cursor(this, predicate, rand);
         }
 
-        public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator, Func<int, bool> predicate, int n, IRandom rand = null)
+        public RowCursor[] GetRowCursorSet(IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random rand = null)
         {
-            _host.CheckValue(predicate, nameof(predicate));
             _host.CheckValueOrNull(rand);
-            consolidator = null;
-            return new IRowCursor[] { GetRowCursor(predicate, rand) };
+            return new RowCursor[] { GetRowCursor(columnsNeeded, rand) };
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -425,13 +427,13 @@ namespace Microsoft.ML.Runtime.Data
             var saver = new BinarySaver(_host, saverArgs);
             using (var strm = new MemoryStream())
             {
-                var allColumns = Enumerable.Range(0, Schema.ColumnCount).ToArray();
+                var allColumns = Enumerable.Range(0, Schema.Count).ToArray();
                 saver.SaveData(strm, noRows, allColumns);
                 ctx.SaveBinaryStream(SchemaCtxName, w => w.WriteByteArray(strm.ToArray()));
             }
         }
 
-        private sealed class Cursor : RootCursorBase, IRowCursor
+        private sealed class Cursor : RootCursorBase
         {
             private readonly ParquetLoader _loader;
             private readonly Stream _fileStream;
@@ -444,9 +446,9 @@ namespace Microsoft.ML.Runtime.Data
             private IEnumerator<int> _dataSetEnumerator;
             private IEnumerator<int> _blockEnumerator;
             private IList[] _columnValues;
-            private IRandom _rand;
+            private Random _rand;
 
-            public Cursor(ParquetLoader parent, Func<int, bool> predicate, IRandom rand)
+            public Cursor(ParquetLoader parent, Func<int, bool> predicate, Random rand)
                : base(parent._host)
             {
                 Ch.AssertValue(predicate);
@@ -458,7 +460,7 @@ namespace Microsoft.ML.Runtime.Data
                 _rand = rand;
 
                 // Create Getter delegates
-                Utils.BuildSubsetMaps(Schema.ColumnCount, predicate, out _actives, out _colToActivesIndex);
+                Utils.BuildSubsetMaps(Schema.Count, predicate, out _actives, out _colToActivesIndex);
                 _readerOptions = new ReaderOptions
                 {
                     Count = _loader._columnChunkReadSize,
@@ -515,7 +517,7 @@ namespace Microsoft.ML.Runtime.Data
                     case DataType.Int64:
                         return CreateGetterDelegateCore<long?, long>(col, _parquetConversions.Conv);
                     case DataType.Int96:
-                        return CreateGetterDelegateCore<BigInteger, UInt128>(col, _parquetConversions.Conv);
+                        return CreateGetterDelegateCore<BigInteger, RowId>(col, _parquetConversions.Conv);
                     case DataType.ByteArray:
                         return CreateGetterDelegateCore<byte[], VBuffer<Byte>>(col, _parquetConversions.Conv);
                     case DataType.String:
@@ -544,8 +546,9 @@ namespace Microsoft.ML.Runtime.Data
 
                 return (ref TValue value) =>
                 {
+                    Ch.Check(Position >= 0, RowCursorUtils.FetchValueStateError);
                     TSource val = (TSource)_columnValues[activeIdx][_curDataSetRow];
-                    valueConverter(ref val, ref value);
+                    valueConverter(in val, ref value);
                 };
             }
             #endregion
@@ -584,11 +587,11 @@ namespace Microsoft.ML.Runtime.Data
                 return false;
             }
 
-            public Schema Schema => _loader.Schema;
+            public override Microsoft.Data.DataView.Schema Schema => _loader.Schema;
 
             public override long Batch => 0;
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            public override ValueGetter<TValue> GetGetter<TValue>(int col)
             {
                 Ch.CheckParam(IsColumnActive(col), nameof(col), "requested column not active");
 
@@ -599,18 +602,18 @@ namespace Microsoft.ML.Runtime.Data
                 return getter;
             }
 
-            public override ValueGetter<UInt128> GetIdGetter()
+            public override ValueGetter<RowId> GetIdGetter()
             {
                 return
-                   (ref UInt128 val) =>
+                   (ref RowId val) =>
                    {
                        // Unique row id consists of Position of cursor (how many times MoveNext has been called), and position in file
-                       Ch.Check(IsGood, "Cannot call ID getter in current state");
-                       val = new UInt128((ulong)(_readerOptions.Offset + _curDataSetRow), 0);
+                       Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                       val = new RowId((ulong)(_readerOptions.Offset + _curDataSetRow), 0);
                    };
             }
 
-            public bool IsColumnActive(int col)
+            public override bool IsColumnActive(int col)
             {
                 Ch.CheckParam(0 <= col && col < _colToActivesIndex.Length, nameof(col));
                 return _colToActivesIndex[col] >= 0;
@@ -676,41 +679,41 @@ namespace Microsoft.ML.Runtime.Data
                 _ch = channel;
             }
 
-            public void Conv(ref byte[] src, ref VBuffer<Byte> dst) => dst = src != null ? new VBuffer<byte>(src.Length, src) : new VBuffer<byte>(0, new byte[0]);
+            public void Conv(in byte[] src, ref VBuffer<Byte> dst) => dst = src != null ? new VBuffer<byte>(src.Length, src) : new VBuffer<byte>(0, new byte[0]);
 
-            public void Conv(ref sbyte? src, ref sbyte dst) => dst = (sbyte)src;
+            public void Conv(in sbyte? src, ref sbyte dst) => dst = (sbyte)src;
 
-            public void Conv(ref byte src, ref byte dst) => dst = src;
+            public void Conv(in byte src, ref byte dst) => dst = src;
 
-            public void Conv(ref short? src, ref short dst) => dst = (short)src;
+            public void Conv(in short? src, ref short dst) => dst = (short)src;
 
-            public void Conv(ref ushort src, ref ushort dst) => dst = src;
+            public void Conv(in ushort src, ref ushort dst) => dst = src;
 
-            public void Conv(ref int? src, ref int dst) => dst = (int)src;
+            public void Conv(in int? src, ref int dst) => dst = (int)src;
 
-            public void Conv(ref long? src, ref long dst) => dst = (long)src;
+            public void Conv(in long? src, ref long dst) => dst = (long)src;
 
-            public void Conv(ref float? src, ref Single dst) => dst = src ?? Single.NaN;
+            public void Conv(in float? src, ref Single dst) => dst = src ?? Single.NaN;
 
-            public void Conv(ref double? src, ref Double dst) => dst = src ?? Double.NaN;
+            public void Conv(in double? src, ref Double dst) => dst = src ?? Double.NaN;
 
-            public void Conv(ref decimal? src, ref Double dst) => dst = src != null ? Decimal.ToDouble((decimal)src) : Double.NaN;
+            public void Conv(in decimal? src, ref Double dst) => dst = src != null ? Decimal.ToDouble((decimal)src) : Double.NaN;
 
-            public void Conv(ref string src, ref ReadOnlyMemory<char> dst) => dst = src.AsMemory();
+            public void Conv(in string src, ref ReadOnlyMemory<char> dst) => dst = src.AsMemory();
 
             //Behavior for NA values is undefined.
-            public void Conv(ref bool src, ref bool dst) => dst = src;
+            public void Conv(in bool src, ref bool dst) => dst = src;
 
-            public void Conv(ref DateTimeOffset src, ref DateTimeOffset dst) => dst = src;
+            public void Conv(in DateTimeOffset src, ref DateTimeOffset dst) => dst = src;
 
-            public void Conv(ref IList src, ref ReadOnlyMemory<char> dst) => dst = ConvertListToString(src).AsMemory();
+            public void Conv(in IList src, ref ReadOnlyMemory<char> dst) => dst = ConvertListToString(src).AsMemory();
 
             /// <summary>
-            ///  Converts a System.Numerics.BigInteger value to a UInt128 data type value.
+            ///  Converts a System.Numerics.BigInteger value to a RowId data type value.
             /// </summary>
             /// <param name="src">BigInteger value.</param>
-            /// <param name="dst">UInt128 object.</param>
-            public void Conv(ref BigInteger src, ref UInt128 dst)
+            /// <param name="dst">RowId object.</param>
+            public void Conv(in BigInteger src, ref RowId dst)
             {
                 try
                 {
@@ -718,11 +721,11 @@ namespace Microsoft.ML.Runtime.Data
                     Array.Resize(ref arr, 16);
                     ulong lo = BitConverter.ToUInt64(arr, 0);
                     ulong hi = BitConverter.ToUInt64(arr, 8);
-                    dst = new UInt128(lo, hi);
+                    dst = new RowId(lo, hi);
                 }
                 catch (Exception ex)
                 {
-                    _ch.Error("Cannot convert BigInteger to UInt128. Exception : '{0}'", ex.Message);
+                    _ch.Error("Cannot convert BigInteger to RowId. Exception : '{0}'", ex.Message);
                     dst = default;
                 }
             }
@@ -732,7 +735,7 @@ namespace Microsoft.ML.Runtime.Data
             /// </summary>
             /// <param name="src">Parquet Interval value (int : months, int : days, int : milliseconds).</param>
             /// <param name="dst">TimeSpan object.</param>
-            public void Conv(ref Interval src, ref TimeSpan dst)
+            public void Conv(in Interval src, ref TimeSpan dst)
             {
                 dst = TimeSpan.FromDays(src.Months * 30 + src.Days) + TimeSpan.FromMilliseconds(src.Millis);
             }

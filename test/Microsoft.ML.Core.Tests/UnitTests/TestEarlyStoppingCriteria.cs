@@ -2,18 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Internal.Internallearn;
 using Microsoft.ML.TestFramework;
 using Xunit;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed class TestEarlyStoppingCriteria
     {
         private IEarlyStoppingCriterion CreateEarlyStoppingCriterion(string name, string args, bool lowerIsBetter)
         {
-            var env = new ConsoleEnvironment()
+            var env = new MLContext()
                 .AddStandardComponents();
             var sub = new SubComponent<IEarlyStoppingCriterion, SignatureEarlyStoppingCriterion>(name, args);
             return sub.CreateInstance(env, lowerIsBetter);

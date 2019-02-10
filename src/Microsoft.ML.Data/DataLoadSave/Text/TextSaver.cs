@@ -3,22 +3,24 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.Conversion;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.Conversion;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
 
 [assembly: LoadableClass(TextSaver.Summary, typeof(TextSaver), typeof(TextSaver.Arguments), typeof(SignatureDataSaver),
     "Text Saver", "TextSaver", "Text", DocName = "saver/TextSaver.md")]
 
-namespace Microsoft.ML.Runtime.Data.IO
+namespace Microsoft.ML.Data.IO
 {
-    public sealed class TextSaver : IDataSaver
+    [BestFriend]
+    internal sealed class TextSaver : IDataSaver
     {
         // REVIEW: consider saving a command line in a separate file.
         public sealed class Arguments
@@ -47,14 +49,14 @@ namespace Microsoft.ML.Runtime.Data.IO
         {
             public readonly int Source;
 
-            public static ValueWriter Create(IRowCursor cursor, int col, char sep)
+            public static ValueWriter Create(RowCursor cursor, int col, char sep)
             {
                 Contracts.AssertValue(cursor);
 
-                ColumnType type = cursor.Schema.GetColumnType(col);
+                ColumnType type = cursor.Schema[col].Type;
                 Type writePipeType;
-                if (type.IsVector)
-                    writePipeType = typeof(VecValueWriter<>).MakeGenericType(type.ItemType.RawType);
+                if (type is VectorType vectorType)
+                    writePipeType = typeof(VecValueWriter<>).MakeGenericType(vectorType.ItemType.RawType);
                 else
                     writePipeType = typeof(ValueWriter<>).MakeGenericType(type.RawType);
 
@@ -87,27 +89,27 @@ namespace Microsoft.ML.Runtime.Data.IO
             protected ValueWriterBase(PrimitiveType type, int source, char sep)
                 : base(source)
             {
-                Contracts.Assert(type.IsStandardScalar || type.IsKey);
+                Contracts.Assert(type.IsStandardScalar() || type is KeyType);
                 Contracts.Assert(type.RawType == typeof(T));
 
                 Sep = sep;
-                if (type.IsText)
+                if (type is TextType)
                 {
                     // For text we need to deal with escaping.
                     ValueMapper<ReadOnlyMemory<char>, StringBuilder> c = MapText;
                     Conv = (ValueMapper<T, StringBuilder>)(Delegate)c;
                 }
-                else if (type.IsTimeSpan)
+                else if (type is TimeSpanType)
                 {
                     ValueMapper<TimeSpan, StringBuilder> c = MapTimeSpan;
                     Conv = (ValueMapper<T, StringBuilder>)(Delegate)c;
                 }
-                else if (type.IsDateTime)
+                else if (type is DateTimeType)
                 {
                     ValueMapper<DateTime, StringBuilder> c = MapDateTime;
                     Conv = (ValueMapper<T, StringBuilder>)(Delegate)c;
                 }
-                else if (type.IsDateTimeZone)
+                else if (type is DateTimeOffsetType)
                 {
                     ValueMapper<DateTimeOffset, StringBuilder> c = MapDateTimeZone;
                     Conv = (ValueMapper<T, StringBuilder>)(Delegate)c;
@@ -116,28 +118,28 @@ namespace Microsoft.ML.Runtime.Data.IO
                     Conv = Conversions.Instance.GetStringConversion<T>(type);
 
                 var d = default(T);
-                Conv(ref d, ref Sb);
+                Conv(in d, ref Sb);
                 Default = Sb.ToString();
             }
 
-            protected void MapText(ref ReadOnlyMemory<char> src, ref StringBuilder sb)
+            protected void MapText(in ReadOnlyMemory<char> src, ref StringBuilder sb)
             {
                 TextSaverUtils.MapText(src.Span, ref sb, Sep);
             }
 
-            protected void MapTimeSpan(ref TimeSpan src, ref StringBuilder sb)
+            protected void MapTimeSpan(in TimeSpan src, ref StringBuilder sb)
             {
-                TextSaverUtils.MapTimeSpan(ref src, ref sb);
+                TextSaverUtils.MapTimeSpan(in src, ref sb);
             }
 
-            protected void MapDateTime(ref DateTime src, ref StringBuilder sb)
+            protected void MapDateTime(in DateTime src, ref StringBuilder sb)
             {
-                TextSaverUtils.MapDateTime(ref src, ref sb);
+                TextSaverUtils.MapDateTime(in src, ref sb);
             }
 
-            protected void MapDateTimeZone(ref DateTimeOffset src, ref StringBuilder sb)
+            protected void MapDateTimeZone(in DateTimeOffset src, ref StringBuilder sb)
             {
-                TextSaverUtils.MapDateTimeZone(ref src, ref sb);
+                TextSaverUtils.MapDateTimeZone(in src, ref sb);
             }
         }
 
@@ -148,38 +150,40 @@ namespace Microsoft.ML.Runtime.Data.IO
             private readonly VBuffer<ReadOnlyMemory<char>> _slotNames;
             private readonly int _slotCount;
 
-            public VecValueWriter(IRowCursor cursor, VectorType type, int source, char sep)
+            public VecValueWriter(RowCursor cursor, VectorType type, int source, char sep)
                 : base(type.ItemType, source, sep)
             {
                 _getSrc = cursor.GetGetter<VBuffer<T>>(source);
-                ColumnType typeNames;
-                if (type.IsKnownSizeVector &&
-                    (typeNames = cursor.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, source)) != null &&
-                    typeNames.VectorSize == type.VectorSize && typeNames.ItemType.IsText)
+                VectorType typeNames;
+                if (type.IsKnownSize
+                    && (typeNames = cursor.Schema[source].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.SlotNames)?.Type as VectorType) != null
+                    && typeNames.Size == type.Size && typeNames.ItemType is TextType)
                 {
-                    cursor.Schema.GetMetadata(MetadataUtils.Kinds.SlotNames, source, ref _slotNames);
-                    Contracts.Check(_slotNames.Length == typeNames.VectorSize, "Unexpected slot names length");
+                    cursor.Schema[source].Metadata.GetValue(MetadataUtils.Kinds.SlotNames, ref _slotNames);
+                    Contracts.Check(_slotNames.Length == typeNames.Size, "Unexpected slot names length");
                 }
-                _slotCount = type.VectorSize;
+                _slotCount = type.Size;
             }
 
             public override void WriteData(Action<StringBuilder, int> appendItem, out int length)
             {
                 _getSrc(ref _src);
+                var srcValues = _src.GetValues();
                 if (_src.IsDense)
                 {
-                    for (int i = 0; i < _src.Length; i++)
+                    for (int i = 0; i < srcValues.Length; i++)
                     {
-                        Conv(ref _src.Values[i], ref Sb);
+                        Conv(in srcValues[i], ref Sb);
                         appendItem(Sb, i);
                     }
                 }
                 else
                 {
-                    for (int i = 0; i < _src.Count; i++)
+                    var srcIndices = _src.GetIndices();
+                    for (int i = 0; i < srcValues.Length; i++)
                     {
-                        Conv(ref _src.Values[i], ref Sb);
-                        appendItem(Sb, _src.Indices[i]);
+                        Conv(in srcValues[i], ref Sb);
+                        appendItem(Sb, srcIndices[i]);
                     }
                 }
                 length = _src.Length;
@@ -188,15 +192,18 @@ namespace Microsoft.ML.Runtime.Data.IO
             public override void WriteHeader(Action<StringBuilder, int> appendItem, out int length)
             {
                 length = _slotCount;
-                if (_slotNames.Count == 0)
+                var slotNamesValues = _slotNames.GetValues();
+                if (slotNamesValues.Length == 0)
                     return;
-                for (int i = 0; i < _slotNames.Count; i++)
+
+                var slotNamesIndices = _slotNames.GetIndices();
+                for (int i = 0; i < slotNamesValues.Length; i++)
                 {
-                    var name = _slotNames.Values[i];
+                    var name = slotNamesValues[i];
                     if (name.IsEmpty)
                         continue;
-                    MapText(ref name, ref Sb);
-                    int index = _slotNames.IsDense ? i : _slotNames.Indices[i];
+                    MapText(in name, ref Sb);
+                    int index = _slotNames.IsDense ? i : slotNamesIndices[i];
                     appendItem(Sb, index);
                 }
             }
@@ -208,17 +215,17 @@ namespace Microsoft.ML.Runtime.Data.IO
             private T _src;
             private string _columnName;
 
-            public ValueWriter(IRowCursor cursor, PrimitiveType type, int source, char sep)
+            public ValueWriter(RowCursor cursor, PrimitiveType type, int source, char sep)
                 : base(type, source, sep)
             {
                 _getSrc = cursor.GetGetter<T>(source);
-                _columnName = cursor.Schema.GetColumnName(source);
+                _columnName = cursor.Schema[source].Name;
             }
 
             public override void WriteData(Action<StringBuilder, int> appendItem, out int length)
             {
                 _getSrc(ref _src);
-                Conv(ref _src, ref Sb);
+                Conv(in _src, ref Sb);
                 appendItem(Sb, 0);
                 length = 1;
             }
@@ -226,7 +233,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             public override void WriteHeader(Action<StringBuilder, int> appendItem, out int length)
             {
                 var span = _columnName.AsMemory();
-                MapText(ref span, ref Sb);
+                MapText(in span, ref Sb);
                 appendItem(Sb, 0);
                 length = 1;
             }
@@ -309,8 +316,8 @@ namespace Microsoft.ML.Runtime.Data.IO
 
         public bool IsColumnSavable(ColumnType type)
         {
-            var item = type.ItemType;
-            return item.IsStandardScalar || item.IsKey;
+            var item = type.GetItemType();
+            return item.IsStandardScalar() || item is KeyType;
         }
 
         public void SaveData(Stream stream, IDataView data, params int[] cols)
@@ -379,12 +386,13 @@ namespace Microsoft.ML.Runtime.Data.IO
             ch.AssertNonEmpty(cols);
 
             // Determine the active columns and whether there is header information.
-            bool[] active = new bool[data.Schema.ColumnCount];
+            var activeCols = new List<Schema.Column>();
             for (int i = 0; i < cols.Length; i++)
             {
-                ch.Check(0 <= cols[i] && cols[i] < active.Length);
-                ch.Check(data.Schema.GetColumnType(cols[i]).ItemType.RawKind != 0);
-                active[cols[i]] = true;
+                ch.Check(0 <= cols[i] && cols[i] < data.Schema.Count);
+                ColumnType itemType = data.Schema[cols[i]].Type.GetItemType();
+                ch.Check(itemType is KeyType || itemType.IsStandardScalar());
+                activeCols.Add(data.Schema[cols[i]]);
             }
 
             bool hasHeader = false;
@@ -394,21 +402,21 @@ namespace Microsoft.ML.Runtime.Data.IO
                 {
                     if (hasHeader)
                         continue;
-                    var type = data.Schema.GetColumnType(cols[i]);
-                    if (!type.IsVector)
+                    var type = data.Schema[cols[i]].Type;
+                    if (!(type is VectorType vectorType))
                     {
                         hasHeader = true;
                         continue;
                     }
-                    if (!type.IsKnownSizeVector)
+                    if (!vectorType.IsKnownSize)
                         continue;
-                    var typeNames = data.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, cols[i]);
-                    if (typeNames != null && typeNames.VectorSize == type.VectorSize && typeNames.ItemType.IsText)
+                    var typeNames = data.Schema[cols[i]].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.SlotNames)?.Type as VectorType;
+                    if (typeNames != null && typeNames.Size == vectorType.Size && typeNames.ItemType is TextType)
                         hasHeader = true;
                 }
             }
 
-            using (var cursor = data.GetRowCursor(i => active[i]))
+            using (var cursor = data.GetRowCursor(activeCols))
             {
                 var pipes = new ValueWriter[cols.Length];
                 for (int i = 0; i < cols.Length; i++)
@@ -420,7 +428,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 if (_outputSchema)
                     WriteSchemaAsComment(writer, header);
 
-                double rowCount = data.GetRowCount(true) ?? double.NaN;
+                double rowCount = data.GetRowCount() ?? double.NaN;
                 using (var pch = !_silent ? _host.StartProgressChannel("TextSaver: saving data") : null)
                 {
                     long stateCount = 0;
@@ -444,7 +452,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             writer.WriteLine("#@ }");
         }
 
-        private string CreateLoaderArguments(ISchema schema, ValueWriter[] pipes, bool hasHeader, IChannel ch)
+        private string CreateLoaderArguments(Schema schema, ValueWriter[] pipes, bool hasHeader, IChannel ch)
         {
             StringBuilder sb = new StringBuilder();
             if (hasHeader)
@@ -457,8 +465,8 @@ namespace Microsoft.ML.Runtime.Data.IO
             for (int i = 0; i < pipes.Length; i++)
             {
                 int src = pipes[i].Source;
-                string name = schema.GetColumnName(src);
-                var type = schema.GetColumnType(src);
+                string name = schema[src].Name;
+                var type = schema[src].Type;
 
                 var column = GetColumn(name, type, index);
                 sb.Append(" col=");
@@ -467,13 +475,13 @@ namespace Microsoft.ML.Runtime.Data.IO
                     var settings = CmdParser.GetSettings(_host, column, new TextLoader.Column());
                     CmdQuoter.QuoteValue(settings, sb, true);
                 }
-                if (type.IsVector && !type.IsKnownSizeVector && i != pipes.Length - 1)
+                if (type is VectorType vectorType && !vectorType.IsKnownSize && i != pipes.Length - 1)
                 {
                     ch.Warning("Column '{0}' is variable length, so it must be the last, or the file will be unreadable. Consider switching to binary format or use xf=Choose to make '{0}' the last column.", name);
                     index = null;
                 }
 
-                index += type.ValueCount;
+                index += type.GetValueCount();
             }
 
             return sb.ToString();
@@ -481,37 +489,25 @@ namespace Microsoft.ML.Runtime.Data.IO
 
         private TextLoader.Column GetColumn(string name, ColumnType type, int? start)
         {
-            DataKind? kind;
-            KeyRange keyRange = null;
-            if (type.ItemType.IsKey)
-            {
-                var key = type.ItemType.AsKey;
-                if (!key.Contiguous)
-                    keyRange = new KeyRange(key.Min, contiguous: false);
-                else if (key.Count == 0)
-                    keyRange = new KeyRange(key.Min);
-                else
-                {
-                    Contracts.Assert(key.Count >= 1);
-                    keyRange = new KeyRange(key.Min, key.Min + (ulong)(key.Count - 1));
-                }
-                kind = key.RawKind;
-            }
-            else
-                kind = type.ItemType.RawKind;
+            KeyCount keyCount = null;
+            VectorType vectorType = type as VectorType;
+            ColumnType itemType = vectorType?.ItemType ?? type;
+            if (itemType is KeyType key)
+                keyCount = new KeyCount(key.Count);
+
+            DataKind kind = itemType.GetRawKind();
 
             TextLoader.Range[] source = null;
-
             TextLoader.Range range = null;
             int minValue = start ?? -1;
-            if (type.IsKnownSizeVector)
-                range = new TextLoader.Range { Min = minValue, Max = minValue + type.ValueCount - 1, ForceVector = true };
-            else if (type.IsVector)
+            if (vectorType?.IsKnownSize == true)
+                range = new TextLoader.Range { Min = minValue, Max = minValue + vectorType.Size - 1, ForceVector = true };
+            else if (vectorType != null)
                 range = new TextLoader.Range { Min = minValue, VariableEnd = true };
             else
                 range = new TextLoader.Range { Min = minValue };
             source = new TextLoader.Range[1] { range };
-            return new TextLoader.Column() { Name = name, KeyRange = keyRange, Source = source, Type = kind };
+            return new TextLoader.Column() { Name = name, KeyCount = keyCount, Source = source, Type = kind };
         }
 
         private sealed class State
@@ -568,7 +564,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 _mpslotichLim = new int[128];
             }
 
-            public void Run(IRowCursor cursor, ref long count, out int minLen, out int maxLen)
+            public void Run(RowCursor cursor, ref long count, out int minLen, out int maxLen)
             {
                 minLen = int.MaxValue;
                 maxLen = 0;
@@ -846,7 +842,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             }
         }
 
-        internal static void MapTimeSpan(ref TimeSpan src, ref StringBuilder sb)
+        internal static void MapTimeSpan(in TimeSpan src, ref StringBuilder sb)
         {
             if (sb == null)
                 sb = new StringBuilder();
@@ -856,7 +852,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             sb.AppendFormat("\"{0:c}\"", src);
         }
 
-        internal static void MapDateTime(ref DateTime src, ref StringBuilder sb)
+        internal static void MapDateTime(in DateTime src, ref StringBuilder sb)
         {
             if (sb == null)
                 sb = new StringBuilder();
@@ -866,7 +862,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             sb.AppendFormat("\"{0:o}\"", src);
         }
 
-        internal static void MapDateTimeZone(ref DateTimeOffset src, ref StringBuilder sb)
+        internal static void MapDateTimeZone(in DateTimeOffset src, ref StringBuilder sb)
         {
             if (sb == null)
                 sb = new StringBuilder();

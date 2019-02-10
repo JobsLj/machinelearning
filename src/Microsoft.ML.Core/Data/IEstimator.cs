@@ -2,26 +2,31 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Data;
+using Microsoft.ML.Model;
 
 namespace Microsoft.ML.Core.Data
 {
     /// <summary>
     /// A set of 'requirements' to the incoming schema, as well as a set of 'promises' of the outgoing schema.
-    /// This is more relaxed than the proper <see cref="ISchema"/>, since it's only a subset of the columns,
+    /// This is more relaxed than the proper <see cref="Schema"/>, since it's only a subset of the columns,
     /// and also since it doesn't specify exact <see cref="ColumnType"/>'s for vectors and keys.
     /// </summary>
-    public sealed class SchemaShape
+    public sealed class SchemaShape : IReadOnlyList<SchemaShape.Column>
     {
-        public readonly Column[] Columns;
+        private readonly Column[] _columns;
 
         private static readonly SchemaShape _empty = new SchemaShape(Enumerable.Empty<Column>());
 
-        public sealed class Column
+        public int Count => _columns.Count();
+
+        public Column this[int index] => _columns[index];
+
+        public struct Column
         {
             public enum VectorKind
             {
@@ -54,14 +59,14 @@ namespace Microsoft.ML.Core.Data
             /// </summary>
             public readonly SchemaShape Metadata;
 
-            public Column(string name, VectorKind vecKind, ColumnType itemType, bool isKey, SchemaShape metadata = null)
+            [BestFriend]
+            internal Column(string name, VectorKind vecKind, ColumnType itemType, bool isKey, SchemaShape metadata = null)
             {
                 Contracts.CheckNonEmpty(name, nameof(name));
                 Contracts.CheckValueOrNull(metadata);
-                Contracts.CheckParam(!itemType.IsKey, nameof(itemType), "Item type cannot be a key");
-                Contracts.CheckParam(!itemType.IsVector, nameof(itemType), "Item type cannot be a vector");
-
-                Contracts.CheckParam(!isKey || KeyType.IsValidDataKind(itemType.RawKind), nameof(itemType), "The item type must be valid for a key");
+                Contracts.CheckParam(!(itemType is KeyType), nameof(itemType), "Item type cannot be a key");
+                Contracts.CheckParam(!(itemType is VectorType), nameof(itemType), "Item type cannot be a vector");
+                Contracts.CheckParam(!isKey || KeyType.IsValidDataType(itemType.RawType), nameof(itemType), "The item type must be valid for a key");
 
                 Name = name;
                 Kind = vecKind;
@@ -71,28 +76,29 @@ namespace Microsoft.ML.Core.Data
             }
 
             /// <summary>
-            /// Returns whether <paramref name="inputColumn"/> is a valid input, if this object represents a
+            /// Returns whether <paramref name="source"/> is a valid input, if this object represents a
             /// requirement.
             ///
             /// Namely, it returns true iff:
             ///  - The <see cref="Name"/>, <see cref="Kind"/>, <see cref="ItemType"/>, <see cref="IsKey"/> fields match.
-            ///  - The columns of <see cref="Metadata"/> of <paramref name="inputColumn"/> is a superset of our <see cref="Metadata"/> columns.
+            ///  - The columns of <see cref="Metadata"/> of <paramref name="source"/> is a superset of our <see cref="Metadata"/> columns.
             ///  - Each such metadata column is itself compatible with the input metadata column.
             /// </summary>
-            public bool IsCompatibleWith(Column inputColumn)
+            [BestFriend]
+            internal bool IsCompatibleWith(Column source)
             {
-                Contracts.CheckValue(inputColumn, nameof(inputColumn));
-                if (Name != inputColumn.Name)
+                Contracts.Check(source.IsValid, nameof(source));
+                if (Name != source.Name)
                     return false;
-                if (Kind != inputColumn.Kind)
+                if (Kind != source.Kind)
                     return false;
-                if (!ItemType.Equals(inputColumn.ItemType))
+                if (!ItemType.Equals(source.ItemType))
                     return false;
-                if (IsKey != inputColumn.IsKey)
+                if (IsKey != source.IsKey)
                     return false;
-                foreach (var metaCol in Metadata.Columns)
+                foreach (var metaCol in Metadata)
                 {
-                    if (!inputColumn.Metadata.TryFindColumn(metaCol.Name, out var inputMetaCol))
+                    if (!source.Metadata.TryFindColumn(metaCol.Name, out var inputMetaCol))
                         return false;
                     if (!metaCol.IsCompatibleWith(inputMetaCol))
                         return false;
@@ -100,7 +106,8 @@ namespace Microsoft.ML.Core.Data
                 return true;
             }
 
-            public string GetTypeString()
+            [BestFriend]
+            internal string GetTypeString()
             {
                 string result = ItemType.ToString();
                 if (IsKey)
@@ -111,56 +118,84 @@ namespace Microsoft.ML.Core.Data
                     result = $"VarVector<{result}>";
                 return result;
             }
+
+            /// <summary>
+            /// Return if this structure is not identical to the default value of <see cref="Column"/>. If true,
+            /// it means this structure is initialized properly and therefore considered as valid.
+            /// </summary>
+            [BestFriend]
+            internal bool IsValid => Name != null;
         }
 
         public SchemaShape(IEnumerable<Column> columns)
         {
             Contracts.CheckValue(columns, nameof(columns));
-            Columns = columns.ToArray();
-            Contracts.CheckParam(columns.All(c => c != null), nameof(columns), "No items should be null.");
+            _columns = columns.ToArray();
+            Contracts.CheckParam(columns.All(c => c.IsValid), nameof(columns), "Some items are not initialized properly.");
         }
 
-        private static void GetColumnArgs(ColumnType type,
+        /// <summary>
+        /// Given a <paramref name="type"/>, extract the type parameters that describe this type
+        /// as a <see cref="SchemaShape"/>'s column type.
+        /// </summary>
+        /// <param name="type">The actual column type to process.</param>
+        /// <param name="vecKind">The vector kind of <paramref name="type"/>.</param>
+        /// <param name="itemType">The item type of <paramref name="type"/>.</param>
+        /// <param name="isKey">Whether <paramref name="type"/> (or its item type) is a key.</param>
+        [BestFriend]
+        internal static void GetColumnTypeShape(ColumnType type,
             out Column.VectorKind vecKind,
             out ColumnType itemType,
             out bool isKey)
         {
-            if (type.IsKnownSizeVector)
-                vecKind = Column.VectorKind.Vector;
-            else if (type.IsVector)
-                vecKind = Column.VectorKind.VariableVector;
-            else
-                vecKind = Column.VectorKind.Scalar;
+            if (type is VectorType vectorType)
+            {
+                if (vectorType.IsKnownSize)
+                {
+                    vecKind = Column.VectorKind.Vector;
+                }
+                else
+                {
+                    vecKind = Column.VectorKind.VariableVector;
+                }
 
-            itemType = type.ItemType;
-            if (type.ItemType.IsKey)
-                itemType = PrimitiveType.FromKind(type.ItemType.RawKind);
-            isKey = type.ItemType.IsKey;
+                itemType = vectorType.ItemType;
+            }
+            else
+            {
+                vecKind = Column.VectorKind.Scalar;
+                itemType = type;
+            }
+
+            isKey = itemType is KeyType;
+            if (isKey)
+                itemType = ColumnTypeExtensions.PrimitiveTypeFromType(itemType.RawType);
         }
 
         /// <summary>
         /// Create a schema shape out of the fully defined schema.
         /// </summary>
-        public static SchemaShape Create(Schema schema)
+        [BestFriend]
+        internal static SchemaShape Create(Schema schema)
         {
             Contracts.CheckValue(schema, nameof(schema));
             var cols = new List<Column>();
 
-            for (int iCol = 0; iCol < schema.ColumnCount; iCol++)
+            for (int iCol = 0; iCol < schema.Count; iCol++)
             {
-                if (!schema.IsHidden(iCol))
+                if (!schema[iCol].IsHidden)
                 {
                     // First create the metadata.
                     var mCols = new List<Column>();
-                    foreach (var metaNameType in schema.GetMetadataTypes(iCol))
+                    foreach (var metaColumn in schema[iCol].Metadata.Schema)
                     {
-                        GetColumnArgs(metaNameType.Value, out var mVecKind, out var mItemType, out var mIsKey);
-                        mCols.Add(new Column(metaNameType.Key, mVecKind, mItemType, mIsKey));
+                        GetColumnTypeShape(metaColumn.Type, out var mVecKind, out var mItemType, out var mIsKey);
+                        mCols.Add(new Column(metaColumn.Name, mVecKind, mItemType, mIsKey));
                     }
                     var metadata = mCols.Count > 0 ? new SchemaShape(mCols) : _empty;
                     // Next create the single column.
-                    GetColumnArgs(schema.GetColumnType(iCol), out var vecKind, out var itemType, out var isKey);
-                    cols.Add(new Column(schema.GetColumnName(iCol), vecKind, itemType, isKey, metadata));
+                    GetColumnTypeShape(schema[iCol].Type, out var vecKind, out var itemType, out var isKey);
+                    cols.Add(new Column(schema[iCol].Name, vecKind, itemType, isKey, metadata));
                 }
             }
             return new SchemaShape(cols);
@@ -169,23 +204,21 @@ namespace Microsoft.ML.Core.Data
         /// <summary>
         /// Returns if there is a column with a specified <paramref name="name"/> and if so stores it in <paramref name="column"/>.
         /// </summary>
-        public bool TryFindColumn(string name, out Column column)
+        [BestFriend]
+        internal bool TryFindColumn(string name, out Column column)
         {
             Contracts.CheckValue(name, nameof(name));
-            column = Columns.FirstOrDefault(x => x.Name == name);
-            return column != null;
+            column = _columns.FirstOrDefault(x => x.Name == name);
+            return column.IsValid;
         }
+
+        public IEnumerator<Column> GetEnumerator() => ((IEnumerable<Column>)_columns).GetEnumerator();
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         // REVIEW: I think we should have an IsCompatible method to check if it's OK to use one schema shape
         // as an input to another schema shape. I started writing, but realized that there's more than one way to check for
         // the 'compatibility': as in, 'CAN be compatible' vs. 'WILL be compatible'.
-    }
-
-    /// <summary>
-    /// Exception class for schema validation errors.
-    /// </summary>
-    public class SchemaException : Exception
-    {
     }
 
     /// <summary>
@@ -231,12 +264,11 @@ namespace Microsoft.ML.Core.Data
     /// The transformer is a component that transforms data.
     /// It also supports 'schema propagation' to answer the question of 'how will the data with this schema look, after you transform it?'.
     /// </summary>
-    public interface ITransformer
+    public interface ITransformer : ICanSaveModel
     {
         /// <summary>
         /// Schema propagation for transformers.
         /// Returns the output schema of the data, if the input schema is like the one provided.
-        /// Throws <see cref="SchemaException"/> if the input schema is not valid for the transformer.
         /// </summary>
         Schema GetOutputSchema(Schema inputSchema);
 
@@ -265,7 +297,7 @@ namespace Microsoft.ML.Core.Data
     /// <summary>
     /// The estimator (in Spark terminology) is an 'untrained transformer'. It needs to 'fit' on the data to manufacture
     /// a transformer.
-    /// It also provides the 'schema propagation' like transformers do, but over <see cref="SchemaShape"/> instead of <see cref="ISchema"/>.
+    /// It also provides the 'schema propagation' like transformers do, but over <see cref="SchemaShape"/> instead of <see cref="Schema"/>.
     /// </summary>
     public interface IEstimator<out TTransformer>
         where TTransformer : ITransformer
@@ -278,7 +310,6 @@ namespace Microsoft.ML.Core.Data
         /// <summary>
         /// Schema propagation for estimators.
         /// Returns the output schema shape of the estimator, if the input schema shape is like the one provided.
-        /// Throws <see cref="SchemaException"/> iff the input schema is not valid for the estimator.
         /// </summary>
         SchemaShape GetOutputSchema(SchemaShape inputSchema);
     }

@@ -5,9 +5,9 @@
 using System;
 using System.Linq;
 using System.Text;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
     /// <summary>
     /// This class contains extension methods that support binary serialization of some base C# types
@@ -194,9 +194,9 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             return a;
         }
 
-        // UInt128
+        // RowId
 
-        public static MD5Hash ToUInt128(this byte[] buffer, ref int position)
+        public static MD5Hash ToRowId(this byte[] buffer, ref int position)
         {
             MD5Hash a = new MD5Hash
             {
@@ -550,7 +550,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             return a;
         }
 
-        // UInt128[]
+        // RowId[]
 
         public static int SizeInBytes(this MD5Hash[] array)
         {
@@ -566,13 +566,13 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
         }
 
-        public static unsafe MD5Hash[] ToUInt128Array(this byte[] buffer, ref int position)
+        public static unsafe MD5Hash[] ToRowIdArray(this byte[] buffer, ref int position)
         {
             int length = buffer.ToInt(ref position);
             MD5Hash[] a = new MD5Hash[length];
             for (int i = 0; i < length; ++i)
             {
-                a[i] = buffer.ToUInt128(ref position);
+                a[i] = buffer.ToRowId(ref position);
             }
             return a;
         }

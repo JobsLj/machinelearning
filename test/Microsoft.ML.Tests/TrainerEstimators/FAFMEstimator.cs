@@ -2,33 +2,62 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.FactorizationMachine;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
+using System.Linq;
+using Microsoft.ML.Data;
+using Microsoft.ML.FactorizationMachine;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.SamplesUtils;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.ML.Tests.TrainerEstimators
 {
     public partial class TrainerEstimators : TestDataPipeBase
     {
         [Fact]
+        public void FfmBinaryClassificationWithAdvancedArguments()
+        {
+            var mlContext = new MLContext(seed: 0);
+            var data = DatasetUtils.GenerateFfmSamples(500);
+            var dataView = mlContext.Data.ReadFromEnumerable(data);
+
+            var ffmArgs = new FieldAwareFactorizationMachineTrainer.Options();
+
+            // Customized the field names.
+            ffmArgs.FeatureColumn = nameof(DatasetUtils.FfmExample.Field0); // First field.
+            ffmArgs.ExtraFeatureColumns = new[]{ nameof(DatasetUtils.FfmExample.Field1), nameof(DatasetUtils.FfmExample.Field2) };
+
+            var pipeline = mlContext.BinaryClassification.Trainers.FieldAwareFactorizationMachine(ffmArgs);
+
+            var model = pipeline.Fit(dataView);
+            var prediction = model.Transform(dataView);
+
+            var metrics = mlContext.BinaryClassification.Evaluate(prediction);
+
+            // Run a sanity check against a few of the metrics.
+            Assert.InRange(metrics.Accuracy, 0.9, 1);
+            Assert.InRange(metrics.Auc, 0.9, 1);
+            Assert.InRange(metrics.Auprc, 0.9, 1);
+        }
+
+        [Fact]
         public void FieldAwareFactorizationMachine_Estimator()
         {
             var data = new TextLoader(Env, GetFafmBCLoaderArgs())
                     .Read(GetDataPath(TestDatasets.breastCancer.trainFilename));
 
-            var est = new FieldAwareFactorizationMachineTrainer(Env, "Label", new[] { "Feature1", "Feature2", "Feature3", "Feature4" }, 
-                advancedSettings:s=>
-                {
-                    s.Shuffle = false;
-                    s.Iters = 3;
-                    s.LatentDim = 7;
-                });
+            var ffmArgs = new FieldAwareFactorizationMachineTrainer.Options {
+                FeatureColumn = "Feature1", // Features from the 1st field.
+                ExtraFeatureColumns = new[] { "Feature2", "Feature3",  "Feature4" }, // 2nd field's feature column, 3rd field's feature column, 4th field's feature column.
+                Shuffle = false,
+                Iters = 3,
+                LatentDim = 7,
+            };
+
+            var est = ML.BinaryClassification.Trainers.FieldAwareFactorizationMachine(ffmArgs);
 
             TestEstimatorCore(est, data);
+            var model = est.Fit(data);
+            var anotherModel = est.Train(data, data, model.Model);
 
             Done();
         }
@@ -39,7 +68,7 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             {
                 Separator = "\t",
                 HasHeader = false,
-                Column = new[]
+                Columns = new[]
                 {
                     new TextLoader.Column("Feature1", DataKind.R4, new [] { new TextLoader.Range(1, 2) }),
                     new TextLoader.Column("Feature2", DataKind.R4, new [] { new TextLoader.Range(3, 4) }),

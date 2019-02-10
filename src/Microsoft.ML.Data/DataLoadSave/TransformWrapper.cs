@@ -2,35 +2,38 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Data.DataLoadSave;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Model;
 using System.Collections.Generic;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.DataLoadSave;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Model;
 
 [assembly: LoadableClass(typeof(TransformWrapper), null, typeof(SignatureLoadModel),
     "Transform wrapper", TransformWrapper.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     // REVIEW: this class is public, as long as the Wrappers.cs in tests still rely on it.
     // It needs to become internal.
-    public sealed class TransformWrapper : ITransformer, ICanSaveModel
+    public sealed class TransformWrapper : ITransformer
     {
         public const string LoaderSignature = "TransformWrapper";
         private const string TransformDirTemplate = "Step_{0:000}";
 
         private readonly IHost _host;
         private readonly IDataView _xf;
+        private readonly bool _allowSave;
 
-        public TransformWrapper(IHostEnvironment env, IDataView xf)
+        public TransformWrapper(IHostEnvironment env, IDataView xf, bool allowSave = false)
         {
             Contracts.CheckValue(env, nameof(env));
             _host = env.Register(nameof(TransformWrapper));
             _host.CheckValue(xf, nameof(xf));
             _xf = xf;
+            _allowSave = allowSave;
             IsRowToRowMapper = IsChainRowToRowMapper(_xf);
         }
 
@@ -43,8 +46,10 @@ namespace Microsoft.ML.Runtime.Data
             return output.Schema;
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
+            if (!_allowSave)
+                throw _host.Except("Saving is not permitted.");
             ctx.CheckAtModel();
             ctx.SetVersionInfo(GetVersionInfo());
 
@@ -88,7 +93,7 @@ namespace Microsoft.ML.Runtime.Data
             Contracts.CheckValue(env, nameof(env));
             _host = env.Register(nameof(TransformWrapper));
             _host.CheckValue(ctx, nameof(ctx));
-
+            _allowSave = true;
             ctx.CheckAtModel(GetVersionInfo());
             int n = ctx.Reader.ReadInt32();
             _host.CheckDecode(n >= 0);
@@ -159,7 +164,7 @@ namespace Microsoft.ML.Runtime.Data
         {
             Host.CheckValue(inputSchema, nameof(inputSchema));
 
-            var fakeSchema = Schema.Create(new FakeSchema(Host, inputSchema));
+            var fakeSchema = FakeSchemaFactory.Create(inputSchema);
             var transformer = Fit(new EmptyDataView(Host, fakeSchema));
             return SchemaShape.Create(transformer.GetOutputSchema(fakeSchema));
         }
@@ -175,10 +180,14 @@ namespace Microsoft.ML.Runtime.Data
         {
         }
 
+        /// <summary>
+        /// Returns the <see cref="SchemaShape"/> of the schema which will be produced by the transformer.
+        /// Used for schema propagation and verification in a pipeline.
+        /// </summary>
         public override SchemaShape GetOutputSchema(SchemaShape inputSchema)
         {
             Host.CheckValue(inputSchema, nameof(inputSchema));
-            var fakeSchema = Schema.Create(new FakeSchema(Host, inputSchema));
+            var fakeSchema = FakeSchemaFactory.Create(inputSchema);
             return SchemaShape.Create(Transformer.GetOutputSchema(fakeSchema));
         }
     }

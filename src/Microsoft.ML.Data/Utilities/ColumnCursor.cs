@@ -2,10 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Data.DataView;
 
 namespace Microsoft.ML.Data
 {
@@ -39,13 +39,13 @@ namespace Microsoft.ML.Data
             //     - If this is the same type, we can map directly.
             //     - Otherwise, we need a conversion delegate.
 
-            var colType = data.Schema.GetColumnType(col);
+            var colType = data.Schema[col].Type;
             if (colType.RawType == typeof(T))
             {
                 // Direct mapping is possible.
                 return GetColumnDirect<T>(data, col);
             }
-            else if (typeof(T) == typeof(string) && colType.IsText)
+            else if (typeof(T) == typeof(string) && colType is TextType)
             {
                 // Special case of ROM<char> to string conversion.
                 Delegate convert = (Func<ReadOnlyMemory<char>, string>)((ReadOnlyMemory<char> txt) => txt.ToString());
@@ -56,22 +56,22 @@ namespace Microsoft.ML.Data
             else if (typeof(T).IsArray)
             {
                 // Output is an array type.
-                if (!colType.IsVector)
+                if (!(colType is VectorType colVectorType))
                     throw env.ExceptSchemaMismatch(nameof(columnName), "input", columnName, "vector", "scalar");
                 var elementType = typeof(T).GetElementType();
-                if (elementType == colType.ItemType.RawType)
+                if (elementType == colVectorType.ItemType.RawType)
                 {
                     // Direct mapping of items.
                     Func<IDataView, int, IEnumerable<int[]>> del = GetColumnArrayDirect<int>;
                     var meth = del.Method.GetGenericMethodDefinition().MakeGenericMethod(elementType);
                     return (IEnumerable<T>)meth.Invoke(null, new object[] { data, col });
                 }
-                else if (elementType == typeof(string) && colType.ItemType.IsText)
+                else if (elementType == typeof(string) && colVectorType.ItemType is TextType)
                 {
                     // Conversion of DvText items to string items.
                     Delegate convert = (Func<ReadOnlyMemory<char>, string>)((ReadOnlyMemory<char> txt) => txt.ToString());
                     Func<IDataView, int, Func<int, long>, IEnumerable<long[]>> del = GetColumnArrayConvert;
-                    var meth = del.Method.GetGenericMethodDefinition().MakeGenericMethod(elementType, colType.ItemType.RawType);
+                    var meth = del.Method.GetGenericMethodDefinition().MakeGenericMethod(elementType, colVectorType.ItemType.RawType);
                     return (IEnumerable<T>)meth.Invoke(null, new object[] { data, col, convert });
                 }
                 // Fall through to the failure.
@@ -82,9 +82,9 @@ namespace Microsoft.ML.Data
         private static IEnumerable<T> GetColumnDirect<T>(IDataView data, int col)
         {
             Contracts.AssertValue(data);
-            Contracts.Assert(0 <= col && col < data.Schema.ColumnCount);
+            Contracts.Assert(0 <= col && col < data.Schema.Count);
 
-            using (var cursor = data.GetRowCursor(col.Equals))
+            using (var cursor = data.GetRowCursor(data.Schema[col]))
             {
                 var getter = cursor.GetGetter<T>(col);
                 T curValue = default;
@@ -99,9 +99,9 @@ namespace Microsoft.ML.Data
         private static IEnumerable<TOut> GetColumnConvert<TOut, TData>(IDataView data, int col, Func<TData, TOut> convert)
         {
             Contracts.AssertValue(data);
-            Contracts.Assert(0 <= col && col < data.Schema.ColumnCount);
+            Contracts.Assert(0 <= col && col < data.Schema.Count);
 
-            using (var cursor = data.GetRowCursor(col.Equals))
+            using (var cursor = data.GetRowCursor(data.Schema[col]))
             {
                 var getter = cursor.GetGetter<TData>(col);
                 TData curValue = default;
@@ -116,9 +116,9 @@ namespace Microsoft.ML.Data
         private static IEnumerable<T[]> GetColumnArrayDirect<T>(IDataView data, int col)
         {
             Contracts.AssertValue(data);
-            Contracts.Assert(0 <= col && col < data.Schema.ColumnCount);
+            Contracts.Assert(0 <= col && col < data.Schema.Count);
 
-            using (var cursor = data.GetRowCursor(col.Equals))
+            using (var cursor = data.GetRowCursor(data.Schema[col]))
             {
                 var getter = cursor.GetGetter<VBuffer<T>>(col);
                 VBuffer<T> curValue = default;
@@ -137,9 +137,9 @@ namespace Microsoft.ML.Data
         private static IEnumerable<TOut[]> GetColumnArrayConvert<TOut, TData>(IDataView data, int col, Func<TData, TOut> convert)
         {
             Contracts.AssertValue(data);
-            Contracts.Assert(0 <= col && col < data.Schema.ColumnCount);
+            Contracts.Assert(0 <= col && col < data.Schema.Count);
 
-            using (var cursor = data.GetRowCursor(col.Equals))
+            using (var cursor = data.GetRowCursor(data.Schema[col]))
             {
                 var getter = cursor.GetGetter<VBuffer<TData>>(col);
                 VBuffer<TData> curValue = default;

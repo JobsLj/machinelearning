@@ -3,20 +3,21 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeriesProcessing;
 
 [assembly: LoadableClass(PValueTransform.Summary, typeof(PValueTransform), typeof(PValueTransform.Arguments), typeof(SignatureDataTransform),
     PValueTransform.UserName, PValueTransform.LoaderSignature, PValueTransform.ShortName)]
 [assembly: LoadableClass(PValueTransform.Summary, typeof(PValueTransform), null, typeof(SignatureLoadDataTransform),
     PValueTransform.UserName, PValueTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// PValueTransform is a sequential transform that computes the empirical p-value of the current value in the series based on the other values in
@@ -71,7 +72,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
         private readonly bool _isPositiveSide;
 
         public PValueTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(args.WindowSize, args.InitialWindowSize, args.Source, args.Name, LoaderSignature, env, input)
+            : base(args.WindowSize, args.InitialWindowSize, args.Name, args.Source, LoaderSignature, env, input)
         {
             Host.CheckUserArg(args.WindowSize >= 1, nameof(args.WindowSize), "The size of the sliding window should be at least 1.");
             _seed = args.Seed;
@@ -90,7 +91,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(WindowSize >= 1);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             Host.Assert(WindowSize >= 1);
@@ -102,23 +103,23 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // int: _percentile
             // byte: _isPositiveSide
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             ctx.Writer.Write(_seed);
             ctx.Writer.WriteBoolByte(_isPositiveSide);
         }
 
         public sealed class State : StateBase
         {
-            private IRandom _randomGen;
+            private Random _randomGen;
 
             private PValueTransform _parent;
 
-            protected override void SetNaOutput(ref Single dst)
+            private protected override void SetNaOutput(ref Single dst)
             {
                 dst = Single.NaN;
             }
 
-            protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single dst)
+            private protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single dst)
             {
                 int count;
                 int equalCount;
@@ -131,13 +132,13 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 // Based on the equation in http://arxiv.org/pdf/1204.3251.pdf
             }
 
-            protected override void InitializeStateCore()
+            private protected override void InitializeStateCore()
             {
                 _parent = (PValueTransform)ParentTransform;
                 _randomGen = RandomUtils.Create(_parent._seed);
             }
 
-            protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
+            private protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
             {
                 // This method is empty because there is no need for parameter learning from the initial windowed buffer for this transform.
             }

@@ -2,21 +2,22 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 
 [assembly: LoadableClass(typeof(TransformerChain<ITransformer>), typeof(TransformerChain), null, typeof(SignatureLoadModel),
     "Transformer chain", TransformerChain.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// This enum allows for 'tagging' the estimators (and subsequently transformers) in the chain to be used
@@ -36,10 +37,21 @@ namespace Microsoft.ML.Runtime.Data
     }
 
     /// <summary>
+    /// Used to determine if <see cref="ITransformer"/> object is of type <see cref="TransformerChain"/>
+    /// so that its internal fields can be accessed.
+    /// </summary>
+    [BestFriend]
+    internal interface ITransformerChainAccessor
+    {
+        ITransformer[] Transformers { get; }
+        TransformerScope[] Scopes { get; }
+    }
+
+    /// <summary>
     /// A chain of transformers (possibly empty) that end with a <typeparamref name="TLastTransformer"/>.
     /// For an empty chain, <typeparamref name="TLastTransformer"/> is always <see cref="ITransformer"/>.
     /// </summary>
-    public sealed class TransformerChain<TLastTransformer> : ITransformer, ICanSaveModel, IEnumerable<ITransformer>
+    public sealed class TransformerChain<TLastTransformer> : ITransformer, IEnumerable<ITransformer>, ITransformerChainAccessor
     where TLastTransformer : class, ITransformer
     {
         private readonly ITransformer[] _transformers;
@@ -49,6 +61,10 @@ namespace Microsoft.ML.Runtime.Data
         private const string TransformDirTemplate = "Transform_{0:000}";
 
         public bool IsRowToRowMapper => _transformers.All(t => t.IsRowToRowMapper);
+
+        ITransformer[] ITransformerChainAccessor.Transformers => _transformers;
+
+        TransformerScope[] ITransformerChainAccessor.Scopes => _scopes;
 
         private static VersionInfo GetVersionInfo()
         {
@@ -149,7 +165,7 @@ namespace Microsoft.ML.Runtime.Data
             return new TransformerChain<TNewLast>(_transformers.AppendElement(transformer), _scopes.AppendElement(scope));
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             ctx.CheckAtModel();
             ctx.SetVersionInfo(GetVersionInfo());
@@ -165,7 +181,7 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         /// <summary>
-        /// The loading constructor of transformer chain. Reverse of <see cref="Save(ModelSaveContext)"/>.
+        /// The loading constructor of transformer chain. Reverse of <see cref="ICanSaveModel.Save"/>.
         /// </summary>
         internal TransformerChain(IHostEnvironment env, ModelLoadContext ctx)
         {
@@ -211,7 +227,7 @@ namespace Microsoft.ML.Runtime.Data
             for (int i = 0; i < mappers.Length; ++i)
             {
                 mappers[i] = _transformers[i].GetRowToRowMapper(schema);
-                schema = mappers[i].Schema;
+                schema = mappers[i].OutputSchema;
             }
             return new CompositeRowToRowMapper(inputSchema, mappers);
         }
@@ -237,8 +253,47 @@ namespace Microsoft.ML.Runtime.Data
         {
             using (var rep = RepositoryReader.Open(stream, env))
             {
-                ModelLoadContext.LoadModel<TransformerChain<ITransformer>, SignatureLoadModel>(env, out var transformerChain, rep, LoaderSignature);
-                return transformerChain;
+                try
+                {
+                    ModelLoadContext.LoadModel<TransformerChain<ITransformer>, SignatureLoadModel>(env, out var transformerChain, rep, LoaderSignature);
+                    return transformerChain;
+                }
+                catch
+                {
+                    var chain = ModelFileUtils.LoadPipeline(env, stream, new MultiFileSource(null), extractInnerPipe: false);
+                    TransformerChain<ITransformer> transformChain = (chain as CompositeDataLoader).GetTransformer();
+                    var predictor = ModelFileUtils.LoadPredictorOrNull(env, stream);
+                    if (predictor == null)
+                        return transformChain;
+                    var roles = ModelFileUtils.LoadRoleMappingsOrNull(env, stream);
+                    env.CheckDecode(roles != null, "Predictor model must contain role mappings");
+                    var roleMappings = roles.ToArray();
+
+                    ITransformer pred = null;
+                    if (predictor.PredictionKind == PredictionKind.BinaryClassification)
+                        pred = new BinaryPredictionTransformer<IPredictorProducing<float>>(env, predictor as IPredictorProducing<float>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value);
+                    else if (predictor.PredictionKind == PredictionKind.MultiClassClassification)
+                        pred = new MulticlassPredictionTransformer<IPredictorProducing<VBuffer<float>>>(env,
+                            predictor as IPredictorProducing<VBuffer<float>>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Label.Value).First().Value);
+                    else if (predictor.PredictionKind == PredictionKind.Clustering)
+                        pred = new ClusteringPredictionTransformer<IPredictorProducing<VBuffer<float>>>(env, predictor as IPredictorProducing<VBuffer<float>>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value);
+                    else if (predictor.PredictionKind == PredictionKind.Regression)
+                        pred = new RegressionPredictionTransformer<IPredictorProducing<float>>(env, predictor as IPredictorProducing<float>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value);
+                    else if (predictor.PredictionKind == PredictionKind.AnomalyDetection)
+                        pred = new AnomalyPredictionTransformer<IPredictorProducing<float>>(env, predictor as IPredictorProducing<float>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value);
+                    else if (predictor.PredictionKind == PredictionKind.Ranking)
+                        pred = new RankingPredictionTransformer<IPredictorProducing<float>>(env, predictor as IPredictorProducing<float>, chain.Schema,
+                            roles.Where(x => x.Key.Value == RoleMappedSchema.ColumnRole.Feature.Value).First().Value);
+                    else
+                        throw env.Except("Don't know how to map prediction kind {0}", predictor.PredictionKind);
+                    return transformChain.Append(pred);
+                }
             }
         }
     }

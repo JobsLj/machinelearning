@@ -2,30 +2,31 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.Conversion;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Training;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.Conversion;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Trainers.Online;
+using Microsoft.ML.Training;
 
-namespace Microsoft.ML.Runtime.Learners
+namespace Microsoft.ML.Trainers
 {
     using TScalarTrainer = ITrainerEstimator<ISingleFeaturePredictionTransformer<IPredictorProducing<float>>, IPredictorProducing<float>>;
 
-    public abstract class MetaMulticlassTrainer<TTransformer, TModel> : ITrainerEstimator<TTransformer, TModel>, ITrainer<TModel>
+    public abstract class MetaMulticlassTrainer<TTransformer, TModel> : ITrainerEstimator<TTransformer, TModel>, ITrainer<IPredictor>
         where TTransformer : ISingleFeaturePredictionTransformer<TModel>
-        where TModel : IPredictor
+        where TModel : class
     {
         public abstract class ArgumentsBase
         {
             [Argument(ArgumentType.Multiple, HelpText = "Base predictor", ShortName = "p", SortOrder = 4, SignatureType = typeof(SignatureBinaryClassifierTrainer))]
             [TGUI(Label = "Predictor Type", Description = "Type of underlying binary predictor")]
-            public IComponentFactory<TScalarTrainer> PredictorType;
+            internal IComponentFactory<TScalarTrainer> PredictorType;
 
             [Argument(ArgumentType.Multiple, HelpText = "Output calibrator", ShortName = "cali", SortOrder = 150, NullName = "<None>", SignatureType = typeof(SignatureCalibrator))]
             public IComponentFactory<ICalibratorTrainer> Calibrator = new PlattCalibratorTrainerFactory();
@@ -42,29 +43,26 @@ namespace Microsoft.ML.Runtime.Learners
         /// </summary>
         public readonly SchemaShape.Column LabelColumn;
 
-        protected readonly ArgumentsBase Args;
-        protected readonly IHost Host;
-        protected readonly ICalibratorTrainer Calibrator;
-
-        private TScalarTrainer _trainer;
+        private protected readonly ArgumentsBase Args;
+        private protected readonly IHost Host;
+        private protected readonly ICalibratorTrainer Calibrator;
+        private protected readonly TScalarTrainer Trainer;
 
         public PredictionKind PredictionKind => PredictionKind.MultiClassClassification;
 
-        protected SchemaShape.Column[] OutputColumns;
+        private protected SchemaShape.Column[] OutputColumns;
 
         public TrainerInfo Info { get; }
 
-        public TScalarTrainer PredictorType;
-
         /// <summary>
-        /// Initializes the <see cref="MetaMulticlassTrainer{TTransformer, TModel}"/> from the Arguments class.
+        /// Initializes the <see cref="MetaMulticlassTrainer{TTransformer, TModel}"/> from the <see cref="ArgumentsBase"/> class.
         /// </summary>
         /// <param name="env">The private instance of the <see cref="IHostEnvironment"/>.</param>
         /// <param name="args">The legacy arguments <see cref="ArgumentsBase"/>class.</param>
         /// <param name="name">The component name.</param>
         /// <param name="labelColumn">The label column for the metalinear trainer and the binary trainer.</param>
         /// <param name="singleEstimator">The binary estimator.</param>
-        /// <param name="calibrator">The calibrator. If a calibrator is not explicitly provided, it will default to <see cref="PlattCalibratorCalibratorTrainer"/></param>
+        /// <param name="calibrator">The calibrator. If a calibrator is not explicitly provided, it will default to <see cref="PlattCalibratorTrainer"/></param>
         internal MetaMulticlassTrainer(IHostEnvironment env, ArgumentsBase args, string name, string labelColumn = null,
             TScalarTrainer singleEstimator = null, ICalibratorTrainer calibrator = null)
         {
@@ -75,67 +73,56 @@ namespace Microsoft.ML.Runtime.Learners
             if (labelColumn != null)
                 LabelColumn = new SchemaShape.Column(labelColumn, SchemaShape.Column.VectorKind.Scalar, NumberType.U4, true);
 
-            // Create the first trainer so errors in the args surface early.
-            _trainer = singleEstimator ?? CreateTrainer();
+            Trainer = singleEstimator ?? CreateTrainer();
 
             Calibrator = calibrator ?? new PlattCalibratorTrainer(env);
-
             if (args.Calibrator != null)
                 Calibrator = args.Calibrator.CreateComponent(Host);
 
             // Regarding caching, no matter what the internal predictor, we're performing many passes
             // simply by virtue of this being a meta-trainer, so we will still cache.
-            Info = new TrainerInfo(normalization: _trainer.Info.NeedNormalization);
+            Info = new TrainerInfo(normalization: Trainer.Info.NeedNormalization);
         }
 
         private TScalarTrainer CreateTrainer()
         {
             return Args.PredictorType != null ?
                 Args.PredictorType.CreateComponent(Host) :
-                new LinearSvm(Host, new LinearSvm.Arguments());
+                new LinearSvmTrainer(Host, new LinearSvmTrainer.Options());
         }
 
-        protected IDataView MapLabelsCore<T>(ColumnType type, RefPredicate<T> equalsTarget, RoleMappedData data)
+        private protected IDataView MapLabelsCore<T>(ColumnType type, InPredicate<T> equalsTarget, RoleMappedData data)
         {
             Host.AssertValue(type);
             Host.Assert(type.RawType == typeof(T));
             Host.AssertValue(equalsTarget);
             Host.AssertValue(data);
-            Host.AssertValue(data.Schema.Label);
+            Host.Assert(data.Schema.Label.HasValue);
 
-            var lab = data.Schema.Label;
+            var lab = data.Schema.Label.Value;
 
-            RefPredicate<T> isMissing;
+            InPredicate<T> isMissing;
             if (!Args.ImputeMissingLabelsAsNegative && Conversions.Instance.TryGetIsNAPredicate(type, out isMissing))
             {
                 return LambdaColumnMapper.Create(Host, "Label mapper", data.Data,
                     lab.Name, lab.Name, type, NumberType.Float,
-                    (ref T src, ref float dst) =>
-                        dst = equalsTarget(ref src) ? 1 : (isMissing(ref src) ? float.NaN : default(float)));
+                    (in T src, ref float dst) =>
+                        dst = equalsTarget(in src) ? 1 : (isMissing(in src) ? float.NaN : default(float)));
             }
             return LambdaColumnMapper.Create(Host, "Label mapper", data.Data,
                 lab.Name, lab.Name, type, NumberType.Float,
-                (ref T src, ref float dst) =>
-                    dst = equalsTarget(ref src) ? 1 : default(float));
+                (in T src, ref float dst) =>
+                    dst = equalsTarget(in src) ? 1 : default(float));
         }
 
-        protected TScalarTrainer GetTrainer()
-        {
-            // We may have instantiated the first trainer to use already, from the constructor.
-            // If so capture it and set the retained trainer to null; otherwise create a new one.
-            var train = _trainer ?? CreateTrainer();
-            _trainer = null;
-            return train;
-        }
-
-        protected abstract TModel TrainCore(IChannel ch, RoleMappedData data, int count);
+        private protected abstract TModel TrainCore(IChannel ch, RoleMappedData data, int count);
 
         /// <summary>
         /// The legacy train method.
         /// </summary>
         /// <param name="context">The trainig context for this learner.</param>
         /// <returns>The trained model.</returns>
-        public TModel Train(TrainContext context)
+        IPredictor ITrainer<IPredictor>.Train(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
             var data = context.TrainingSet;
@@ -148,7 +135,7 @@ namespace Microsoft.ML.Runtime.Learners
 
             using (var ch = Host.Start("Training"))
             {
-                var pred = TrainCore(ch, data, count);
+                var pred = TrainCore(ch, data, count) as IPredictor;
                 ch.Check(pred != null, "Training did not result in a predictor");
                 return pred;
             }
@@ -163,16 +150,16 @@ namespace Microsoft.ML.Runtime.Learners
         {
             Host.CheckValue(inputSchema, nameof(inputSchema));
 
-            if (LabelColumn != null)
+            if (LabelColumn.IsValid)
             {
                 if (!inputSchema.TryFindColumn(LabelColumn.Name, out var labelCol))
-                    throw Host.ExceptSchemaMismatch(nameof(labelCol), DefaultColumnNames.PredictedLabel, DefaultColumnNames.PredictedLabel);
+                    throw Host.ExceptSchemaMismatch(nameof(labelCol), "label", LabelColumn.Name);
 
                 if (!LabelColumn.IsCompatibleWith(labelCol))
-                    throw Host.Except($"Label column '{LabelColumn.Name}' is not compatible");
+                    throw Host.ExceptSchemaMismatch(nameof(inputSchema), "label", LabelColumn.Name, LabelColumn.GetTypeString(), labelCol.GetTypeString());
             }
 
-            var outColumns = inputSchema.Columns.ToDictionary(x => x.Name);
+            var outColumns = inputSchema.ToDictionary(x => x.Name);
             foreach (var col in GetOutputColumnsCore(inputSchema))
                 outColumns[col.Name] = col;
 
@@ -181,16 +168,16 @@ namespace Microsoft.ML.Runtime.Learners
 
         private SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema)
         {
-            if (LabelColumn != null)
+            if (LabelColumn.IsValid)
             {
                 bool success = inputSchema.TryFindColumn(LabelColumn.Name, out var labelCol);
                 Contracts.Assert(success);
 
-                var metadata = new SchemaShape(labelCol.Metadata.Columns.Where(x => x.Name == MetadataUtils.Kinds.KeyValues)
+                var metadata = new SchemaShape(labelCol.Metadata.Where(x => x.Name == MetadataUtils.Kinds.KeyValues)
                                 .Concat(MetadataForScoreColumn()));
                 return new[]
                 {
-                    new SchemaShape.Column(DefaultColumnNames.Score, SchemaShape.Column.VectorKind.Vector, NumberType.R4, false, new SchemaShape(MetadataForScoreColumn())),
+                    new SchemaShape.Column(DefaultColumnNames.Score, SchemaShape.Column.VectorKind.Vector, NumberType.R4, false, new SchemaShape(MetadataUtils.MetadataForMulticlassScoreColumn(labelCol))),
                     new SchemaShape.Column(DefaultColumnNames.PredictedLabel, SchemaShape.Column.VectorKind.Scalar, NumberType.U4, true, metadata)
                 };
             }
@@ -216,7 +203,7 @@ namespace Microsoft.ML.Runtime.Learners
             return cols;
         }
 
-        IPredictor ITrainer.Train(TrainContext context) => Train(context);
+        IPredictor ITrainer.Train(TrainContext context) => ((ITrainer<IPredictor>)this).Train(context);
 
         /// <summary>
         /// Fits the data to the trainer.

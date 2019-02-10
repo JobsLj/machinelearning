@@ -3,24 +3,37 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeries;
+using Microsoft.ML.TimeSeriesProcessing;
+using static Microsoft.ML.TimeSeriesProcessing.SequentialAnomalyDetectionTransformBase<System.Single, Microsoft.ML.TimeSeriesProcessing.IidAnomalyDetectionBase.State>;
 
-[assembly: LoadableClass(IidChangePointDetector.Summary, typeof(IidChangePointDetector), typeof(IidChangePointDetector.Arguments), typeof(SignatureDataTransform),
+[assembly: LoadableClass(IidChangePointDetector.Summary, typeof(IDataTransform), typeof(IidChangePointDetector), typeof(IidChangePointDetector.Arguments), typeof(SignatureDataTransform),
     IidChangePointDetector.UserName, IidChangePointDetector.LoaderSignature, IidChangePointDetector.ShortName)]
-[assembly: LoadableClass(IidChangePointDetector.Summary, typeof(IidChangePointDetector), null, typeof(SignatureLoadDataTransform),
+
+[assembly: LoadableClass(IidChangePointDetector.Summary, typeof(IDataTransform), typeof(IidChangePointDetector), null, typeof(SignatureLoadDataTransform),
     IidChangePointDetector.UserName, IidChangePointDetector.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+[assembly: LoadableClass(IidChangePointDetector.Summary, typeof(IidChangePointDetector), null, typeof(SignatureLoadModel),
+    IidChangePointDetector.UserName, IidChangePointDetector.LoaderSignature)]
+
+[assembly: LoadableClass(typeof(IRowMapper), typeof(IidChangePointDetector), null, typeof(SignatureLoadRowMapper),
+   IidChangePointDetector.UserName, IidChangePointDetector.LoaderSignature)]
+
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// This class implements the change point detector transform for an i.i.d. sequence based on adaptive kernel density estimation and martingales.
     /// </summary>
-    public sealed class IidChangePointDetector : IidAnomalyDetectionBase, ITransformTemplate
+    public sealed class IidChangePointDetector : IidAnomalyDetectionBase
     {
         internal const string Summary = "This transform detects the change-points in an i.i.d. sequence using adaptive kernel density estimation and martingales.";
         public const string LoaderSignature = "IidChangePointDetector";
@@ -37,7 +50,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 SortOrder = 2)]
             public string Name;
 
-            [Argument(ArgumentType.AtMostOnce, HelpText = "The change history length.", ShortName = "wnd",
+            [Argument(ArgumentType.AtMostOnce, HelpText = "The length of the sliding window on p-values for computing the martingale score.", ShortName = "wnd",
                 SortOrder = 102)]
             public int ChangeHistoryLength = 20;
 
@@ -89,8 +102,26 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 loaderAssemblyName: typeof(IidChangePointDetector).Assembly.FullName);
         }
 
-        public IidChangePointDetector(IHostEnvironment env, Arguments args, IDataView input)
-            : base(new BaseArguments(args), LoaderSignature, env, input)
+        // Factory method for SignatureDataTransform.
+        private static IDataTransform Create(IHostEnvironment env, Arguments args, IDataView input)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(args, nameof(args));
+            env.CheckValue(input, nameof(input));
+
+            return new IidChangePointDetector(env, args).MakeDataTransform(input);
+        }
+
+        internal override IStatefulTransformer Clone()
+        {
+            var clone = (IidChangePointDetector)MemberwiseClone();
+            clone.StateRef = (State)clone.StateRef.Clone();
+            clone.StateRef.InitState(clone, Host);
+            return clone;
+        }
+
+        internal IidChangePointDetector(IHostEnvironment env, Arguments args)
+            : base(new BaseArguments(args), LoaderSignature, env)
         {
             switch (Martingale)
             {
@@ -109,8 +140,28 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             }
         }
 
-        public IidChangePointDetector(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
-            : base(env, ctx, LoaderSignature, input)
+        // Factory method for SignatureLoadDataTransform.
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(ctx, nameof(ctx));
+            env.CheckValue(input, nameof(input));
+
+            return new IidChangePointDetector(env, ctx).MakeDataTransform(input);
+        }
+
+        // Factory method for SignatureLoadModel.
+        private static IidChangePointDetector Create(IHostEnvironment env, ModelLoadContext ctx)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(ctx, nameof(ctx));
+            ctx.CheckAtModel(GetVersionInfo());
+
+            return new IidChangePointDetector(env, ctx);
+        }
+
+        internal IidChangePointDetector(IHostEnvironment env, ModelLoadContext ctx)
+            : base(env, ctx, LoaderSignature)
         {
             // *** Binary format ***
             // <base>
@@ -119,12 +170,12 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(Side == AnomalySide.TwoSided);
         }
 
-        private IidChangePointDetector(IHostEnvironment env, IidChangePointDetector transform, IDataView newSource)
-            : base(new BaseArguments(transform), LoaderSignature, env, newSource)
+        private IidChangePointDetector(IHostEnvironment env, IidChangePointDetector transform)
+            : base(new BaseArguments(transform), LoaderSignature, env)
         {
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -136,12 +187,77 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // *** Binary format ***
             // <base>
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
         }
 
-        public IDataTransform ApplyToData(IHostEnvironment env, IDataView newSource)
+        // Factory method for SignatureLoadRowMapper.
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, Schema inputSchema)
+            => Create(env, ctx).MakeRowMapper(inputSchema);
+    }
+
+    /// <summary>
+    /// Estimator for <see cref="IidChangePointDetector"/>
+    /// </summary>
+    /// <p>Example code can be found by searching for <i>IidChangePointDetector</i> in <a href='https://github.com/dotnet/machinelearning'>ML.NET.</a></p>
+    /// <example>
+    /// <format type="text/markdown">
+    /// <![CDATA[
+    /// [!code-csharp[MF](~/../docs/samples/docs/samples/Microsoft.ML.Samples/Dynamic/IidChangePointDetectorTransform.cs)]
+    /// ]]>
+    /// </format>
+    /// </example>
+    public sealed class IidChangePointEstimator : TrivialEstimator<IidChangePointDetector>
+    {
+        /// <summary>
+        /// Create a new instance of <see cref="IidChangePointEstimator"/>
+        /// </summary>
+        /// <param name="env">Host Environment.</param>
+        /// <param name="outputColumnName">Name of the column resulting from the transformation of <paramref name="inputColumnName"/>.
+        /// Column is a vector of type double and size 4. The vector contains Alert, Raw Score, P-Value and Martingale score as first four values.</param>
+        /// <param name="confidence">The confidence for change point detection in the range [0, 100].</param>
+        /// <param name="changeHistoryLength">The length of the sliding window on p-values for computing the martingale score.</param>
+        /// <param name="inputColumnName">Name of column to transform. If set to <see langword="null"/>, the value of the <paramref name="outputColumnName"/> will be used as source.</param>
+        /// <param name="martingale">The martingale used for scoring.</param>
+        /// <param name="eps">The epsilon parameter for the Power martingale.</param>
+        public IidChangePointEstimator(IHostEnvironment env, string outputColumnName, int confidence,
+            int changeHistoryLength, string inputColumnName, MartingaleType martingale = MartingaleType.Power, double eps = 0.1)
+            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(IidChangePointEstimator)),
+                new IidChangePointDetector(env, new IidChangePointDetector.Arguments
+                {
+                    Name = outputColumnName,
+                    Source = inputColumnName ?? outputColumnName,
+                    Confidence = confidence,
+                    ChangeHistoryLength = changeHistoryLength,
+                    Martingale = martingale,
+                    PowerMartingaleEpsilon = eps
+                }))
         {
-            return new IidChangePointDetector(env, this, newSource);
+        }
+
+        public IidChangePointEstimator(IHostEnvironment env, IidChangePointDetector.Arguments args)
+            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(IidChangePointEstimator)),
+                new IidChangePointDetector(env, args))
+        {
+        }
+
+        public override SchemaShape GetOutputSchema(SchemaShape inputSchema)
+        {
+            Host.CheckValue(inputSchema, nameof(inputSchema));
+
+            if (!inputSchema.TryFindColumn(Transformer.InputColumnName, out var col))
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", Transformer.InputColumnName);
+            if (col.ItemType != NumberType.R4)
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", Transformer.InputColumnName, "float", col.GetTypeString());
+
+            var metadata = new List<SchemaShape.Column>() {
+                new SchemaShape.Column(MetadataUtils.Kinds.SlotNames, SchemaShape.Column.VectorKind.Vector, TextType.Instance, false)
+            };
+            var resultDic = inputSchema.ToDictionary(x => x.Name);
+
+            resultDic[Transformer.OutputColumnName] = new SchemaShape.Column(
+                Transformer.OutputColumnName, SchemaShape.Column.VectorKind.Vector, NumberType.R8, false, new SchemaShape(metadata));
+
+            return new SchemaShape(resultDic.Values);
         }
     }
 }

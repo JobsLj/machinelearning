@@ -5,13 +5,15 @@
 using System.Collections.Generic;
 using System.IO;
 using Google.Protobuf;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model.Onnx;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model.Onnx;
+using Microsoft.ML.UniversalModelFormat.Onnx;
 using Newtonsoft.Json;
 
 [assembly: LoadableClass(SaveOnnxCommand.Summary, typeof(SaveOnnxCommand), typeof(SaveOnnxCommand.Arguments), typeof(SignatureCommand),
@@ -19,9 +21,9 @@ using Newtonsoft.Json;
 
 [assembly: LoadableClass(typeof(void), typeof(SaveOnnxCommand), null, typeof(SignatureEntryPointModule), "SaveOnnx")]
 
-namespace Microsoft.ML.Runtime.Model.Onnx
+namespace Microsoft.ML.Model.Onnx
 {
-    public sealed class SaveOnnxCommand : DataCommand.ImplBase<SaveOnnxCommand.Arguments>
+    internal sealed class SaveOnnxCommand : DataCommand.ImplBase<SaveOnnxCommand.Arguments>
     {
         public const string Summary = "Given a data model, write out the corresponding ONNX.";
         public const string LoadName = "SaveOnnx";
@@ -56,7 +58,7 @@ namespace Microsoft.ML.Runtime.Model.Onnx
             public bool? LoadPredictor;
 
             [Argument(ArgumentType.Required, Visibility = ArgumentAttribute.VisibilityType.EntryPointsOnly, HelpText = "Model that needs to be converted to ONNX format.", SortOrder = 10)]
-            public ITransformModel Model;
+            public TransformModel Model;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "The targeted ONNX version. It can be either \"Stable\" or \"Experimental\". If \"Experimental\" is used, produced model can contain components that is not officially supported in ONNX standard.", SortOrder = 11)]
             public OnnxVersion OnnxVersion;
@@ -69,7 +71,7 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         private readonly bool? _loadPredictor;
         private readonly HashSet<string> _inputsToDrop;
         private readonly HashSet<string> _outputsToDrop;
-        private readonly ITransformModel _model;
+        private readonly TransformModel _model;
         private const string ProducerName = "ML.NET";
         private const long ModelVersion = 0;
 
@@ -113,9 +115,10 @@ namespace Microsoft.ML.Runtime.Model.Onnx
             }
         }
 
-        private void GetPipe(OnnxContextImpl ctx, IChannel ch, IDataView end, out IDataView source, out IDataView trueEnd, out LinkedList<ITransformCanSaveOnnx> transforms)
+        internal static void GetPipe(OnnxContextImpl ctx, IChannel ch, IDataView end, out IDataView source, out IDataView trueEnd, out LinkedList<ITransformCanSaveOnnx> transforms)
         {
-            Host.AssertValue(end);
+            ch.AssertValue(end);
+
             source = trueEnd = (end as CompositeDataLoader)?.View ?? end;
             IDataTransform transform = source as IDataTransform;
             transforms = new LinkedList<ITransformCanSaveOnnx>();
@@ -134,7 +137,58 @@ namespace Microsoft.ML.Runtime.Model.Onnx
                 transform = (source = transform.Source) as IDataTransform;
             }
 
-            Host.AssertValue(source);
+            ch.AssertValue(source);
+        }
+
+        internal static ModelProto ConvertTransformListToOnnxModel(OnnxContextImpl ctx, IChannel ch, IDataView inputData, IDataView outputData,
+            LinkedList<ITransformCanSaveOnnx> transforms, HashSet<string> inputColumnNamesToDrop=null, HashSet<string> outputColumnNamesToDrop=null)
+        {
+            inputColumnNamesToDrop = inputColumnNamesToDrop ?? new HashSet<string>();
+            outputColumnNamesToDrop = outputColumnNamesToDrop ?? new HashSet<string>();
+            HashSet<string> inputColumns = new HashSet<string>();
+            // Create graph inputs.
+            for (int i = 0; i < inputData.Schema.Count; i++)
+            {
+                string colName = inputData.Schema[i].Name;
+                if(inputColumnNamesToDrop.Contains(colName))
+                    continue;
+
+                ctx.AddInputVariable(inputData.Schema[i].Type, colName);
+                inputColumns.Add(colName);
+            }
+
+            // Create graph nodes, outputs and intermediate values.
+            foreach (var trans in transforms)
+            {
+                ch.Assert(trans.CanSaveOnnx(ctx));
+                trans.SaveAsOnnx(ctx);
+            }
+
+            // Add graph outputs.
+            for (int i = 0; i < outputData.Schema.Count; ++i)
+            {
+                if (outputData.Schema[i].IsHidden)
+                    continue;
+
+                var idataviewColumnName = outputData.Schema[i].Name;
+
+                // Since the last IDataView also contains columns of the initial IDataView, last IDataView's columns found in
+                // _inputToDrop should be removed too.
+                if (inputColumnNamesToDrop.Contains(idataviewColumnName) || outputColumnNamesToDrop.Contains(idataviewColumnName))
+                    continue;
+
+                var variableName = ctx.TryGetVariableName(idataviewColumnName);
+                // Null variable name occurs when an unsupported transform produces an output and a downsteam step consumes that output.
+                // or user accidently removes a transform whose output is used by other transforms.
+                ch.Check(variableName != null, "The targeted pipeline can not be fully converted into a well-defined ONNX model. " +
+                    "Please check if all steps in that pipeline are convertible to ONNX " +
+                    "and all necessary variables are not dropped (via command line arguments).");
+                var trueVariableName = ctx.AddIntermediateVariable(null, idataviewColumnName, true);
+                ctx.CreateNode("Identity", variableName, trueVariableName, ctx.GetNodeName("Identity"), "");
+                ctx.AddOutputVariable(outputData.Schema[i].Type, trueVariableName);
+            }
+
+            return ctx.MakeModel();
         }
 
         private void Run(IChannel ch)
@@ -210,45 +264,8 @@ namespace Microsoft.ML.Runtime.Model.Onnx
                     nameof(Arguments.LoadPredictor), "We were explicitly told to load the predictor but one was not present.");
             }
 
-            HashSet<string> inputColumns = new HashSet<string>();
-            //Create graph inputs.
-            for (int i = 0; i < source.Schema.ColumnCount; i++)
-            {
-                string colName = source.Schema.GetColumnName(i);
-                if(_inputsToDrop.Contains(colName))
-                    continue;
+            var model = ConvertTransformListToOnnxModel(ctx, ch, source, end, transforms, _inputsToDrop, _outputsToDrop);
 
-                ctx.AddInputVariable(source.Schema.GetColumnType(i), colName);
-                inputColumns.Add(colName);
-            }
-
-            //Create graph nodes, outputs and intermediate values.
-            foreach (var trans in transforms)
-            {
-                Host.Assert(trans.CanSaveOnnx(ctx));
-                trans.SaveAsOnnx(ctx);
-            }
-
-            //Add graph outputs.
-            for (int i = 0; i < end.Schema.ColumnCount; ++i)
-            {
-                if (end.Schema.IsHidden(i))
-                    continue;
-
-                var idataviewColumnName = end.Schema.GetColumnName(i);
-
-                // Since the last IDataView also contains columns of the initial IDataView, last IDataView's columns found in
-                // _inputToDrop should be removed too.
-                if (_inputsToDrop.Contains(idataviewColumnName) || _outputsToDrop.Contains(idataviewColumnName))
-                    continue;
-
-                var variableName = ctx.TryGetVariableName(idataviewColumnName);
-                var trueVariableName = ctx.AddIntermediateVariable(null, idataviewColumnName, true);
-                ctx.CreateNode("Identity", variableName, trueVariableName, ctx.GetNodeName("Identity"), "");
-                ctx.AddOutputVariable(end.Schema.GetColumnType(i), trueVariableName);
-            }
-
-            var model = ctx.MakeModel();
             using (var file = Host.CreateOutputFile(_outputModelPath))
             using (var stream = file.CreateWriteStream())
                 model.WriteTo(stream);

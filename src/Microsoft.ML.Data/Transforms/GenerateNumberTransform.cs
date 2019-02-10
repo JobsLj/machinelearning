@@ -2,18 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Transforms;
+using Float = System.Single;
 
-[assembly: LoadableClass(GenerateNumberTransform.Summary, typeof(GenerateNumberTransform), typeof(GenerateNumberTransform.Arguments), typeof(SignatureDataTransform),
+[assembly: LoadableClass(GenerateNumberTransform.Summary, typeof(GenerateNumberTransform), typeof(GenerateNumberTransform.Options), typeof(SignatureDataTransform),
     GenerateNumberTransform.UserName, GenerateNumberTransform.LoadName, "GenerateNumber", GenerateNumberTransform.ShortName)]
 
 [assembly: LoadableClass(GenerateNumberTransform.Summary, typeof(GenerateNumberTransform), null, typeof(SignatureLoadDataTransform),
@@ -21,7 +23,7 @@ using Microsoft.ML.Runtime.Model;
 
 [assembly: EntryPointModule(typeof(RandomNumberGenerator))]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Transforms
 {
     /// <summary>
     /// This transform adds columns containing either random numbers distributed
@@ -29,7 +31,8 @@ namespace Microsoft.ML.Runtime.Data
     /// It will be used in conjunction with a filter transform to create random
     /// partitions of the data, used in cross validation.
     /// </summary>
-    public sealed class GenerateNumberTransform : RowToRowTransformBase
+    [BestFriend]
+    internal sealed class GenerateNumberTransform : RowToRowTransformBase
     {
         public sealed class Column
         {
@@ -42,7 +45,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "The random seed")]
             public uint? Seed;
 
-            public static Column Parse(string str)
+            internal static Column Parse(string str)
             {
                 Contracts.AssertNonEmpty(str);
 
@@ -83,10 +86,11 @@ namespace Microsoft.ML.Runtime.Data
             public const uint Seed = 42;
         }
 
-        public sealed class Arguments : TransformInputBase
+        public sealed class Options : TransformInputBase
         {
-            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:seed)", ShortName = "col", SortOrder = 1)]
-            public Column[] Column;
+            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:seed)",
+                Name = "Column", ShortName = "col", SortOrder = 1)]
+            public Column[] Columns;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Use an auto-incremented integer starting at zero instead of a random number", ShortName = "cnt")]
             public bool UseCounter = Defaults.UseCounter;
@@ -101,7 +105,7 @@ namespace Microsoft.ML.Runtime.Data
             public readonly TauswortheHybrid.State[] States;
 
             private Bindings(bool[] useCounter, TauswortheHybrid.State[] states,
-                ISchema input, bool user, string[] names)
+                Schema input, bool user, string[] names)
                 : base(input, user, names)
             {
                 Contracts.Assert(Utils.Size(useCounter) == InfoCount);
@@ -110,24 +114,24 @@ namespace Microsoft.ML.Runtime.Data
                 States = states;
             }
 
-            public static Bindings Create(Arguments args, ISchema input)
+            public static Bindings Create(Options options, Schema input)
             {
-                var names = new string[args.Column.Length];
-                var useCounter = new bool[args.Column.Length];
-                var states = new TauswortheHybrid.State[args.Column.Length];
-                for (int i = 0; i < args.Column.Length; i++)
+                var names = new string[options.Columns.Length];
+                var useCounter = new bool[options.Columns.Length];
+                var states = new TauswortheHybrid.State[options.Columns.Length];
+                for (int i = 0; i < options.Columns.Length; i++)
                 {
-                    var item = args.Column[i];
+                    var item = options.Columns[i];
                     names[i] = item.Name;
-                    useCounter[i] = item.UseCounter ?? args.UseCounter;
+                    useCounter[i] = item.UseCounter ?? options.UseCounter;
                     if (!useCounter[i])
-                        states[i] = new TauswortheHybrid.State(item.Seed ?? args.Seed);
+                        states[i] = new TauswortheHybrid.State(item.Seed ?? options.Seed);
                 }
 
                 return new Bindings(useCounter, states, input, true, names);
             }
 
-            public static Bindings Create(ModelLoadContext ctx, ISchema input)
+            public static Bindings Create(ModelLoadContext ctx, Schema input)
             {
                 Contracts.AssertValue(ctx);
                 Contracts.AssertValue(input);
@@ -159,7 +163,7 @@ namespace Microsoft.ML.Runtime.Data
                 return new Bindings(useCounter, states, input, false, names);
             }
 
-            public void Save(ModelSaveContext ctx)
+            internal void Save(ModelSaveContext ctx)
             {
                 Contracts.AssertValue(ctx);
 
@@ -231,7 +235,7 @@ namespace Microsoft.ML.Runtime.Data
                 Contracts.AssertValue(predicate);
 
                 var active = GetActiveInput(predicate);
-                Contracts.Assert(active.Length == Input.ColumnCount);
+                Contracts.Assert(active.Length == Input.Count);
                 return col => 0 <= col && col < active.Length && active[col];
             }
         }
@@ -258,27 +262,28 @@ namespace Microsoft.ML.Runtime.Data
         private const string RegistrationName = "GenerateNumber";
 
         /// <summary>
-        /// Convenience constructor for public facing API.
+        /// Initializes a new instance of <see cref="GenerateNumberTransform"/>.
         /// </summary>
         /// <param name="env">Host Environment.</param>
         /// <param name="input">Input <see cref="IDataView"/>. This is the output from previous transform or loader.</param>
         /// <param name="name">Name of the output column.</param>
+        /// <param name="seed">Seed to start random number generator.</param>
         /// <param name="useCounter">Use an auto-incremented integer starting at zero instead of a random number.</param>
-        public GenerateNumberTransform(IHostEnvironment env, IDataView input, string name, bool useCounter = Defaults.UseCounter)
-            : this(env, new Arguments() { Column = new[] { new Column() { Name = name } }, UseCounter = useCounter }, input)
+        public GenerateNumberTransform(IHostEnvironment env, IDataView input, string name, uint? seed = null, bool useCounter = Defaults.UseCounter)
+            : this(env, new Options() { Columns = new[] { new Column() { Name = name } }, Seed = seed ?? Defaults.Seed, UseCounter = useCounter }, input)
         {
         }
 
         /// <summary>
         /// Public constructor corresponding to SignatureDataTransform.
         /// </summary>
-        public GenerateNumberTransform(IHostEnvironment env, Arguments args, IDataView input)
+        public GenerateNumberTransform(IHostEnvironment env, Options options, IDataView input)
             : base(env, RegistrationName, input)
         {
-            Host.CheckValue(args, nameof(args));
-            Host.CheckUserArg(Utils.Size(args.Column) > 0, nameof(args.Column));
+            Host.CheckValue(options, nameof(options));
+            Host.CheckUserArg(Utils.Size(options.Columns) > 0, nameof(options.Columns));
 
-            _bindings = Bindings.Create(args, Source.Schema);
+            _bindings = Bindings.Create(options, Source.Schema);
         }
 
         private GenerateNumberTransform(IHost host, ModelLoadContext ctx, IDataView input)
@@ -304,7 +309,7 @@ namespace Microsoft.ML.Runtime.Data
             return h.Apply("Loading Model", ch => new GenerateNumberTransform(h, ctx, input));
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -317,7 +322,7 @@ namespace Microsoft.ML.Runtime.Data
             _bindings.Save(ctx);
         }
 
-        public override Schema Schema => _bindings.AsSchema;
+        public override Schema OutputSchema => _bindings.AsSchema;
 
         public override bool CanShuffle { get { return false; } }
 
@@ -331,49 +336,51 @@ namespace Microsoft.ML.Runtime.Data
             return null;
         }
 
-        protected override IRowCursor GetRowCursorCore(Func<int, bool> predicate, IRandom rand = null)
+        protected override RowCursor GetRowCursorCore(IEnumerable<Schema.Column> columnsNeeded, Random rand = null)
         {
-            Host.AssertValue(predicate, "predicate");
             Host.AssertValueOrNull(rand);
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, OutputSchema);
 
             var inputPred = _bindings.GetDependencies(predicate);
             var active = _bindings.GetActive(predicate);
-            var input = Source.GetRowCursor(inputPred);
-            return new RowCursor(Host, _bindings, input, active);
+
+            var inputCols = Source.Schema.Where(x => inputPred(x.Index));
+            var input = Source.GetRowCursor(inputCols);
+            return new Cursor(Host, _bindings, input, active);
         }
 
-        public override IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator,
-            Func<int, bool> predicate, int n, IRandom rand = null)
+        public override RowCursor[] GetRowCursorSet(IEnumerable<Schema.Column> columnsNeeded, int n, Random rand = null)
         {
-            Host.CheckValue(predicate, nameof(predicate));
             Host.CheckValueOrNull(rand);
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, OutputSchema);
 
             var inputPred = _bindings.GetDependencies(predicate);
+            var inputCols = Source.Schema.Where(x => inputPred(x.Index));
+
             var active = _bindings.GetActive(predicate);
-            IRowCursor input;
+            RowCursor input;
 
             if (n > 1 && ShouldUseParallelCursors(predicate) != false)
             {
-                var inputs = Source.GetRowCursorSet(out consolidator, inputPred, n);
+                var inputs = Source.GetRowCursorSet(inputCols, n);
                 Host.AssertNonEmpty(inputs);
 
                 if (inputs.Length != 1)
                 {
-                    var cursors = new IRowCursor[inputs.Length];
+                    var cursors = new RowCursor[inputs.Length];
                     for (int i = 0; i < inputs.Length; i++)
-                        cursors[i] = new RowCursor(Host, _bindings, inputs[i], active);
+                        cursors[i] = new Cursor(Host, _bindings, inputs[i], active);
                     return cursors;
                 }
                 input = inputs[0];
             }
             else
-                input = Source.GetRowCursor(inputPred);
+                input = Source.GetRowCursor(inputCols);
 
-            consolidator = null;
-            return new IRowCursor[] { new RowCursor(Host, _bindings, input, active) };
+            return new RowCursor[] { new Cursor(Host, _bindings, input, active) };
         }
 
-        private sealed class RowCursor : SynchronizedCursorBase<IRowCursor>, IRowCursor
+        private sealed class Cursor : SynchronizedCursorBase
         {
             private readonly Bindings _bindings;
             private readonly bool[] _active;
@@ -382,7 +389,7 @@ namespace Microsoft.ML.Runtime.Data
             private readonly TauswortheHybrid[] _rngs;
             private readonly long[] _lastCounters;
 
-            public RowCursor(IChannelProvider provider, Bindings bindings, IRowCursor input, bool[] active)
+            public Cursor(IChannelProvider provider, Bindings bindings, RowCursor input, bool[] active)
                 : base(provider, input)
             {
                 Ch.CheckValue(bindings, nameof(bindings));
@@ -407,15 +414,15 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public Schema Schema => _bindings.AsSchema;
+            public override Schema Schema => _bindings.AsSchema;
 
-            public bool IsColumnActive(int col)
+            public override bool IsColumnActive(int col)
             {
                 Ch.Check(0 <= col && col < _bindings.ColumnCount);
                 return _active == null || _active[col];
             }
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            public override ValueGetter<TValue> GetGetter<TValue>(int col)
             {
                 Ch.Check(IsColumnActive(col));
 
@@ -435,7 +442,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 return (ref long value) =>
                 {
-                    Ch.Check(IsGood);
+                    Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
                     value = Input.Position;
                 };
             }
@@ -454,7 +461,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 return (ref Float value) =>
                 {
-                    Ch.Check(IsGood);
+                    Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
                     Ch.Assert(!_bindings.UseCounter[iinfo]);
                     EnsureValue(ref _lastCounters[iinfo], ref _values[iinfo], _rngs[iinfo]);
                     value = _values[iinfo];
@@ -463,16 +470,16 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public static class RandomNumberGenerator
+    internal static class RandomNumberGenerator
     {
         [TlcModule.EntryPoint(Name = "Transforms.RandomNumberGenerator", Desc = GenerateNumberTransform.Summary, UserName = GenerateNumberTransform.UserName, ShortName = GenerateNumberTransform.ShortName)]
-        public static CommonOutputs.TransformOutput Generate(IHostEnvironment env, GenerateNumberTransform.Arguments input)
+        public static CommonOutputs.TransformOutput Generate(IHostEnvironment env, GenerateNumberTransform.Options input)
         {
             var h = EntryPointUtils.CheckArgsAndCreateHost(env, "GenerateNumber", input);
             var xf = new GenerateNumberTransform(h, input, input.Data);
             return new CommonOutputs.TransformOutput()
             {
-                Model = new TransformModel(h, xf, input.Data),
+                Model = new TransformModelImpl(h, xf, input.Data),
                 OutputData = xf
             };
         }

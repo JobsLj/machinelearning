@@ -9,18 +9,19 @@ using System.IO;
 using System.Linq;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text.RegularExpressions;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Tools;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Tools;
 
 #if TLCFULLBUILD
-using Microsoft.ML.Runtime.ExperimentVisualization;
+using Microsoft.ML.ExperimentVisualization;
 #endif
 
-namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
+namespace Microsoft.ML.ResultProcessor
 {
     using Float = System.Single;
     /// <summary>
@@ -151,7 +152,9 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
         /// <param name="extraAssemblies"></param>
         private Dictionary<string, string> GetDefaultSettings(IHostEnvironment env, string predictorName, string[] extraAssemblies = null)
         {
+#pragma warning disable CS0618 // The result processor is an internal command line processing utility anyway, so this is, while not great, OK.
             AssemblyLoadingUtils.LoadAndRegister(env, extraAssemblies);
+#pragma warning restore CS0618
 
             var cls = env.ComponentCatalog.GetLoadableClassInfo<SignatureTrainer>(predictorName);
             if (cls == null)
@@ -430,9 +433,9 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
             var chainArgs = commandArgs as ChainCommand.Arguments;
             if (chainArgs != null)
             {
-                if (Utils.Size(chainArgs.Command) == 0)
+                if (Utils.Size(chainArgs.Commands) == 0)
                     return null;
-                var acceptableCommand = chainArgs.Command.Cast<ICommandLineComponentFactory>().FirstOrDefault(x =>
+                var acceptableCommand = chainArgs.Commands.Cast<ICommandLineComponentFactory>().FirstOrDefault(x =>
                     string.Equals(x.Name, "CV", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(x.Name, "TrainTest", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(x.Name, "Test", StringComparison.OrdinalIgnoreCase));
@@ -659,7 +662,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
             };
         }
 
-        public static bool ParseCommandArguments(IHostEnvironment env, string commandline, out object commandArgs, out ComponentCatalog.LoadableClassInfo commandClass, bool trimExe = true)
+        internal static bool ParseCommandArguments(IHostEnvironment env, string commandline, out object commandArgs, out ComponentCatalog.LoadableClassInfo commandClass, bool trimExe = true)
         {
             string args = commandline;
             if (trimExe)
@@ -1154,7 +1157,9 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
         {
             string currentDirectory = Path.GetDirectoryName(typeof(ResultProcessor).Module.FullyQualifiedName);
             using (var env = new ConsoleEnvironment(42))
+#pragma warning disable CS0618 // The result processor is an internal command line processing utility anyway, so this is, while not great, OK.
             using (AssemblyLoadingUtils.CreateAssemblyRegistrar(env, currentDirectory))
+#pragma warning restore CS0618
                 return Main(env, args);
         }
 
@@ -1197,7 +1202,9 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor
             if (cmd.IncludePerFoldResults)
                 cmd.PerFoldResultSeparator = "" + PredictionUtil.SepCharFromString(cmd.PerFoldResultSeparator);
 
+#pragma warning disable CS0618 // The result processor is an internal command line processing utility anyway, so this is, while not great, OK.
             AssemblyLoadingUtils.LoadAndRegister(env, cmd.ExtraAssemblies);
+#pragma warning restore CS0618
 
             if (cmd.Metrics.Length == 0)
                 cmd.Metrics = null;

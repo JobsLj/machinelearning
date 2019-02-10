@@ -3,21 +3,21 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeriesProcessing;
 
 [assembly: LoadableClass(ExponentialAverageTransform.Summary, typeof(ExponentialAverageTransform), typeof(ExponentialAverageTransform.Arguments), typeof(SignatureDataTransform),
     ExponentialAverageTransform.UserName, ExponentialAverageTransform.LoaderSignature, ExponentialAverageTransform.ShortName)]
 [assembly: LoadableClass(ExponentialAverageTransform.Summary, typeof(ExponentialAverageTransform), null, typeof(SignatureLoadDataTransform),
     ExponentialAverageTransform.UserName, ExponentialAverageTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// ExponentialAverageTransform is a weighted average of the values: ExpAvg(y_t) = a * y_t + (1-a) * ExpAvg(y_(t-1)).
@@ -58,7 +58,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
         private readonly Single _decay;
 
         public ExponentialAverageTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(1, 1, args.Source, args.Name, LoaderSignature, env, input)
+            : base(1, 1, args.Name, args.Source, LoaderSignature, env, input)
         {
             Host.CheckUserArg(0 <= args.Decay && args.Decay <= 1, nameof(args.Decay), "Should be in [0, 1].");
             _decay = args.Decay;
@@ -77,7 +77,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(WindowSize == 1);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             Host.Assert(WindowSize >= 1);
@@ -89,7 +89,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // <base>
             // Single _decay
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             ctx.Writer.Write(_decay);
         }
 
@@ -109,12 +109,12 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 _firstIteration = true;
             }
 
-            protected override void SetNaOutput(ref Single output)
+            private protected override void SetNaOutput(ref Single output)
             {
                 output = Single.NaN;
             }
 
-            protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single output)
+            private protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single output)
             {
                 if (_firstIteration)
                 {
@@ -127,13 +127,13 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 _previousAverage = output;
             }
 
-            protected override void InitializeStateCore()
+            private protected override void InitializeStateCore()
             {
                 _firstIteration = true;
                 _decay = ((ExponentialAverageTransform)ParentTransform)._decay;
             }
 
-            protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
+            private protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
             {
                 // This method is empty because there is no need for parameter learning from the initial windowed buffer for this transform.
             }

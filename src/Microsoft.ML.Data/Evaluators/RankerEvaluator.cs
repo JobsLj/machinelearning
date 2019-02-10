@@ -2,19 +2,19 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 
 [assembly: LoadableClass(typeof(RankerEvaluator), typeof(RankerEvaluator), typeof(RankerEvaluator.Arguments), typeof(SignatureEvaluator),
     "Ranking Evaluator", RankerEvaluator.LoadName, "Ranking", "rank")]
@@ -25,9 +25,10 @@ using Microsoft.ML.Runtime.Model;
 [assembly: LoadableClass(typeof(RankerPerInstanceTransform), null, typeof(SignatureLoadDataTransform),
     "", RankerPerInstanceTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public sealed class RankerEvaluator : EvaluatorBase<RankerEvaluator.Aggregator>
+    [BestFriend]
+    internal sealed class RankerEvaluator : EvaluatorBase<RankerEvaluator.Aggregator>
     {
         public sealed class Arguments
         {
@@ -83,54 +84,53 @@ namespace Microsoft.ML.Runtime.Data
             _labelGains = labelGains.ToArray();
         }
 
-        protected override void CheckScoreAndLabelTypes(RoleMappedSchema schema)
+        private protected override void CheckScoreAndLabelTypes(RoleMappedSchema schema)
         {
-            var t = schema.Label.Type;
-            if (t != NumberType.Float && !t.IsKey)
+            var t = schema.Label.Value.Type;
+            if (t != NumberType.Float && !(t is KeyType))
             {
-                throw Host.ExceptUserArg(nameof(RankerMamlEvaluator.Arguments.LabelColumn), "Label column '{0}' has type '{1}' but must be R4 or a key",
-                    schema.Label.Name, t);
+                throw Host.ExceptSchemaMismatch(nameof(RankerMamlEvaluator.Arguments.LabelColumn),
+                    "label", schema.Label.Value.Name, "R4 or a key", t.ToString());
             }
-            var scoreInfo = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
-            if (scoreInfo.Type != NumberType.Float)
+            var scoreCol = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
+            if (scoreCol.Type != NumberType.Float)
             {
-                throw Host.ExceptUserArg(nameof(RankerMamlEvaluator.Arguments.ScoreColumn), "Score column '{0}' has type '{1}' but must be R4",
-                    scoreInfo.Name, t);
+                throw Host.ExceptSchemaMismatch(nameof(RankerMamlEvaluator.Arguments.ScoreColumn),
+                    "score", scoreCol.Name, "R4", t.ToString());
             }
         }
 
-        protected override void CheckCustomColumnTypesCore(RoleMappedSchema schema)
+        private protected override void CheckCustomColumnTypesCore(RoleMappedSchema schema)
         {
-            var t = schema.Group.Type;
-            if (!t.IsKey)
+            var t = schema.Group.Value.Type;
+            if (!(t is KeyType))
             {
-                throw Host.ExceptUserArg(nameof(RankerMamlEvaluator.Arguments.GroupIdColumn),
-                    "Group column '{0}' has type '{1}' but must be a key",
-                    schema.Group.Name, t);
+                throw Host.ExceptSchemaMismatch(nameof(RankerMamlEvaluator.Arguments.GroupIdColumn),
+                    "group", schema.Group.Value.Name, "key", t.ToString());
             }
         }
 
         // Add also the group column.
-        protected override Func<int, bool> GetActiveColsCore(RoleMappedSchema schema)
+        private protected override Func<int, bool> GetActiveColsCore(RoleMappedSchema schema)
         {
             var pred = base.GetActiveColsCore(schema);
-            return i => i == schema.Group.Index || pred(i);
+            return i => i == schema.Group.Value.Index || pred(i);
         }
 
-        protected override Aggregator GetAggregatorCore(RoleMappedSchema schema, string stratName)
+        private protected override Aggregator GetAggregatorCore(RoleMappedSchema schema, string stratName)
         {
             return new Aggregator(Host, _labelGains, _truncationLevel, _groupSummary, schema.Weight != null, stratName);
         }
 
-        public override IDataTransform GetPerInstanceMetrics(RoleMappedData data)
+        internal override IDataTransform GetPerInstanceMetricsCore(RoleMappedData data)
         {
             Host.CheckValue(data, nameof(data));
-            Host.CheckParam(data.Schema.Label != null, nameof(data), "Schema must contain a label column");
+            Host.CheckParam(data.Schema.Label.HasValue, nameof(data), "Schema must contain a label column");
             var scoreInfo = data.Schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
-            Host.CheckParam(data.Schema.Group != null, nameof(data), "Schema must contain a group column");
+            Host.CheckParam(data.Schema.Group.HasValue, nameof(data), "Schema must contain a group column");
 
             return new RankerPerInstanceTransform(Host, data.Data,
-                data.Schema.Label.Name, scoreInfo.Name, data.Schema.Group.Name, _truncationLevel, _labelGains);
+                data.Schema.Label.Value.Name, scoreInfo.Name, data.Schema.Group.Value.Name, _truncationLevel, _labelGains);
         }
 
         public override IEnumerable<MetricColumn> GetOverallMetricColumns()
@@ -146,7 +146,7 @@ namespace Microsoft.ML.Runtime.Data
                 groupName: "at", nameFormat: string.Format("{0} @{{0}}", MaxDcg));
         }
 
-        protected override void GetAggregatorConsolidationFuncs(Aggregator aggregator, AggregatorDictionaryBase[] dictionaries,
+        private protected override void GetAggregatorConsolidationFuncs(Aggregator aggregator, AggregatorDictionaryBase[] dictionaries,
             out Action<uint, ReadOnlyMemory<char>, Aggregator> addAgg, out Func<Dictionary<string, IDataView>> consolidate)
         {
             var stratCol = new List<uint>();
@@ -204,7 +204,7 @@ namespace Microsoft.ML.Runtime.Data
                     var overallDvBldr = new ArrayDataViewBuilder(Host);
                     if (hasStrats)
                     {
-                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), 0, dictionaries.Length, stratCol.ToArray());
+                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), (ulong)dictionaries.Length, stratCol.ToArray());
                         overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratVal, TextType.Instance, stratVal.ToArray());
                     }
                     if (hasWeight)
@@ -215,7 +215,7 @@ namespace Microsoft.ML.Runtime.Data
                     var groupDvBldr = new ArrayDataViewBuilder(Host);
                     if (hasStrats)
                     {
-                        groupDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), 0, dictionaries.Length, groupStratCol.ToArray());
+                        groupDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), (ulong)dictionaries.Length, groupStratCol.ToArray());
                         groupDvBldr.AddColumn(MetricKinds.ColumnNames.StratVal, TextType.Instance, groupStratVal.ToArray());
                     }
                     if (groupSummary)
@@ -242,7 +242,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="groupId">The name of the groupId column.</param>
         /// <param name="score">The name of the predicted score column.</param>
         /// <returns>The evaluation metrics for these outputs.</returns>
-        public Result Evaluate(IDataView data, string label, string groupId, string score)
+        public RankerMetrics Evaluate(IDataView data, string label, string groupId, string score)
         {
             Host.CheckValue(data, nameof(data));
             Host.CheckNonEmpty(label, nameof(label));
@@ -252,16 +252,16 @@ namespace Microsoft.ML.Runtime.Data
                 RoleMappedSchema.ColumnRole.Group.Bind(groupId),
                 RoleMappedSchema.CreatePair(MetadataUtils.Const.ScoreValueKind.Score, score));
 
-            var resultDict = Evaluate(roles);
+            var resultDict = ((IEvaluator)this).Evaluate(roles);
             Host.Assert(resultDict.ContainsKey(MetricKinds.OverallMetrics));
             var overall = resultDict[MetricKinds.OverallMetrics];
 
-            Result result;
-            using (var cursor = overall.GetRowCursor(i => true))
+            RankerMetrics result;
+            using (var cursor = overall.GetRowCursorForAllColumns())
             {
                 var moved = cursor.MoveNext();
                 Host.Assert(moved);
-                result = new Result(Host, cursor);
+                result = new RankerMetrics(Host, cursor);
                 moved = cursor.MoveNext();
                 Host.Assert(!moved);
             }
@@ -439,23 +439,23 @@ namespace Microsoft.ML.Runtime.Data
                     GroupId = new List<ReadOnlyMemory<char>>();
             }
 
-            public override void InitializeNextPass(IRow row, RoleMappedSchema schema)
+            internal override void InitializeNextPass(Row row, RoleMappedSchema schema)
             {
                 Contracts.Assert(PassNum < 1);
-                Contracts.AssertValue(schema.Label);
-                Contracts.AssertValue(schema.Group);
+                Contracts.Assert(schema.Label.HasValue);
+                Contracts.Assert(schema.Group.HasValue);
 
                 var score = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
 
-                _labelGetter = RowCursorUtils.GetLabelGetter(row, schema.Label.Index);
+                _labelGetter = RowCursorUtils.GetLabelGetter(row, schema.Label.Value.Index);
                 _scoreGetter = row.GetGetter<Single>(score.Index);
-                _newGroupDel = RowCursorUtils.GetIsNewGroupDelegate(row, schema.Group.Index);
-                if (schema.Weight != null)
-                    _weightGetter = row.GetGetter<Single>(schema.Weight.Index);
+                _newGroupDel = RowCursorUtils.GetIsNewGroupDelegate(row, schema.Group.Value.Index);
+                if (schema.Weight.HasValue)
+                    _weightGetter = row.GetGetter<Single>(schema.Weight.Value.Index);
 
                 if (UnweightedCounters.GroupSummary)
                 {
-                    ValueGetter<StringBuilder> groupIdBuilder = RowCursorUtils.GetGetterAsStringBuilder(row, schema.Group.Index);
+                    ValueGetter<StringBuilder> groupIdBuilder = RowCursorUtils.GetGetterAsStringBuilder(row, schema.Group.Value.Index);
                     _groupSbUpdate = () => groupIdBuilder(ref _groupSb);
                 }
                 else
@@ -522,64 +522,24 @@ namespace Microsoft.ML.Runtime.Data
                 return
                     (ref VBuffer<ReadOnlyMemory<char>> dst) =>
                     {
-                        var values = dst.Values;
-                        if (Utils.Size(values) < UnweightedCounters.TruncationLevel)
-                            values = new ReadOnlyMemory<char>[UnweightedCounters.TruncationLevel];
-
+                        var editor = VBufferEditor.Create(ref dst, UnweightedCounters.TruncationLevel);
                         for (int i = 0; i < UnweightedCounters.TruncationLevel; i++)
-                            values[i] = string.Format("{0}@{1}", prefix, i + 1).AsMemory();
-                        dst = new VBuffer<ReadOnlyMemory<char>>(UnweightedCounters.TruncationLevel, values);
+                            editor.Values[i] = string.Format("{0}@{1}", prefix, i + 1).AsMemory();
+                        dst = editor.Commit();
                     };
             }
 
             public void GetSlotNames(ref VBuffer<ReadOnlyMemory<char>> slotNames)
             {
-                var values = slotNames.Values;
-                if (Utils.Size(values) < UnweightedCounters.TruncationLevel)
-                    values = new ReadOnlyMemory<char>[UnweightedCounters.TruncationLevel];
-
+                var editor = VBufferEditor.Create(ref slotNames, UnweightedCounters.TruncationLevel);
                 for (int i = 0; i < UnweightedCounters.TruncationLevel; i++)
-                    values[i] = string.Format("@{0}", i + 1).AsMemory();
-                slotNames = new VBuffer<ReadOnlyMemory<char>>(UnweightedCounters.TruncationLevel, values);
-            }
-        }
-
-        public sealed class Result
-        {
-            /// <summary>
-            /// Normalized Discounted Cumulative Gain
-            /// <a href="https://github.com/dotnet/machinelearning/tree/master/docs/images/ndcg.png"></a>
-            /// </summary>
-            public double[] Ndcg { get; }
-
-            /// <summary>
-            /// <a href="https://en.wikipedia.org/wiki/Discounted_cumulative_gain">Discounted Cumulative gain</a>
-            /// is the sum of the gains, for all the instances i, normalized by the natural logarithm of the instance + 1.
-            /// Note that unline the Wikipedia article, ML.Net uses the natural logarithm.
-            /// <a href="https://github.com/dotnet/machinelearning/tree/master/docs/images/dcg.png"></a>
-            /// </summary>
-            public double[] Dcg { get; }
-
-            private static T Fetch<T>(IExceptionContext ectx, IRow row, string name)
-            {
-                if (!row.Schema.TryGetColumnIndex(name, out int col))
-                    throw ectx.Except($"Could not find column '{name}'");
-                T val = default;
-                row.GetGetter<T>(col)(ref val);
-                return val;
-            }
-
-            internal Result(IExceptionContext ectx, IRow overallResult)
-            {
-                VBuffer<double> Fetch(string name) => Fetch<VBuffer<double>>(ectx, overallResult, name);
-
-                Dcg = Fetch(RankerEvaluator.Dcg).Values;
-                Ndcg = Fetch(RankerEvaluator.Ndcg).Values;
+                    editor.Values[i] = string.Format("@{0}", i + 1).AsMemory();
+                slotNames = editor.Commit();
             }
         }
     }
 
-    public sealed class RankerPerInstanceTransform : IDataTransform
+    internal sealed class RankerPerInstanceTransform : IDataTransform
     {
         public const string LoaderSignature = "RankerPerInstTransform";
         private const string RegistrationName = LoaderSignature;
@@ -605,7 +565,16 @@ namespace Microsoft.ML.Runtime.Data
 
         public bool CanShuffle { get { return _transform.CanShuffle; } }
 
-        public Schema Schema => _transform.Schema;
+        /// <summary>
+        /// Explicit implementation prevents Schema from being accessed from derived classes.
+        /// It's our first step to separate data produced by transform from transform.
+        /// </summary>
+        Schema IDataView.Schema => OutputSchema;
+
+        /// <summary>
+        /// Shape information of the produced output. Note that the input and the output of this transform (and their types) are identical.
+        /// </summary>
+        public Schema OutputSchema => _transform.OutputSchema;
 
         public RankerPerInstanceTransform(IHostEnvironment env, IDataView input, string labelCol, string scoreCol, string groupCol,
                 int truncationLevel, Double[] labelGains)
@@ -628,27 +597,23 @@ namespace Microsoft.ML.Runtime.Data
             return h.Apply("Loading Model", ch => new RankerPerInstanceTransform(h, ctx, input));
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             ctx.CheckAtModel();
             ctx.SetVersionInfo(GetVersionInfo());
-            _transform.Save(ctx);
+            ((ICanSaveModel)_transform).Save(ctx);
         }
 
-        public long? GetRowCount(bool lazy = true)
+        public long? GetRowCount()
         {
-            return _transform.GetRowCount(lazy);
+            return _transform.GetRowCount();
         }
 
-        public IRowCursor GetRowCursor(Func<int, bool> needCol, IRandom rand = null)
-        {
-            return _transform.GetRowCursor(needCol, rand);
-        }
+        public RowCursor GetRowCursor(IEnumerable<Schema.Column> columnsNeeded, Random rand = null)
+            => _transform.GetRowCursor(columnsNeeded, rand);
 
-        public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator, Func<int, bool> needCol, int n, IRandom rand = null)
-        {
-            return _transform.GetRowCursorSet(out consolidator, needCol, n, rand);
-        }
+        public RowCursor[] GetRowCursorSet(IEnumerable<Schema.Column> columnsNeeded, int n, Random rand = null)
+            => _transform.GetRowCursorSet(columnsNeeded, n, rand);
 
         private sealed class Transform : PerGroupTransformBase<short, Single, Transform.RowCursorState>
         {
@@ -659,7 +624,7 @@ namespace Microsoft.ML.Runtime.Data
                 private readonly int _truncationLevel;
                 private readonly MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> _slotNamesGetter;
 
-                public Bindings(IExceptionContext ectx, ISchema input, bool user, string labelCol, string scoreCol, string groupCol,
+                public Bindings(IExceptionContext ectx, Schema input, bool user, string labelCol, string scoreCol, string groupCol,
                     int truncationLevel)
                     : base(ectx, input, labelCol, scoreCol, groupCol, user, Ndcg, Dcg, MaxDcg)
                 {
@@ -705,14 +670,12 @@ namespace Microsoft.ML.Runtime.Data
                 private void SlotNamesGetter(int iinfo, ref VBuffer<ReadOnlyMemory<char>> dst)
                 {
                     Contracts.Assert(0 <= iinfo && iinfo < InfoCount);
-                    var values = dst.Values;
-                    if (Utils.Size(values) < _truncationLevel)
-                        values = new ReadOnlyMemory<char>[_truncationLevel];
+                    var editor = VBufferEditor.Create(ref dst, _truncationLevel);
                     for (int i = 0; i < _truncationLevel; i++)
-                        values[i] =
+                        editor.Values[i] =
                             string.Format("{0}@{1}", iinfo == NdcgCol ? Ndcg : iinfo == DcgCol ? Dcg : MaxDcg,
                                 i + 1).AsMemory();
-                    dst = new VBuffer<ReadOnlyMemory<char>>(_truncationLevel, values);
+                    dst = editor.Commit();
                 }
             }
 
@@ -752,7 +715,7 @@ namespace Microsoft.ML.Runtime.Data
                 _bindings = new Bindings(Host, input.Schema, false, LabelCol, ScoreCol, GroupCol, _truncationLevel);
             }
 
-            public override void Save(ModelSaveContext ctx)
+            private protected override void SaveModel(ModelSaveContext ctx)
             {
                 Host.AssertValue(ctx);
 
@@ -762,13 +725,13 @@ namespace Microsoft.ML.Runtime.Data
                 // int: _labelGains.Length
                 // double[]: _labelGains
 
-                base.Save(ctx);
+                base.SaveModel(ctx);
                 Host.Assert(0 < _truncationLevel && _truncationLevel < 100);
                 ctx.Writer.Write(_truncationLevel);
                 ctx.Writer.WriteDoubleArray(_labelGains);
             }
 
-            protected override BindingsBase GetBindings()
+            private protected override BindingsBase GetBindings()
             {
                 return _bindings;
             }
@@ -802,14 +765,12 @@ namespace Microsoft.ML.Runtime.Data
             private void Copy(Double[] src, ref VBuffer<Double> dst)
             {
                 Host.AssertValue(src);
-                var values = dst.Values;
-                if (Utils.Size(values) < src.Length)
-                    values = new Double[src.Length];
-                src.CopyTo(values, 0);
-                dst = new VBuffer<Double>(src.Length, values);
+                var editor = VBufferEditor.Create(ref dst, src.Length);
+                src.CopyTo(editor.Values);
+                dst = editor.Commit();
             }
 
-            protected override ValueGetter<short> GetLabelGetter(IRow row)
+            protected override ValueGetter<short> GetLabelGetter(Row row)
             {
                 var lb = RowCursorUtils.GetLabelGetter(row, _bindings.LabelIndex);
                 return
@@ -821,12 +782,12 @@ namespace Microsoft.ML.Runtime.Data
                     };
             }
 
-            protected override ValueGetter<Single> GetScoreGetter(IRow row)
+            protected override ValueGetter<Single> GetScoreGetter(Row row)
             {
                 return row.GetGetter<Single>(_bindings.ScoreIndex);
             }
 
-            protected override RowCursorState InitializeState(IRow input)
+            protected override RowCursorState InitializeState(Row input)
             {
                 return new RowCursorState(_truncationLevel);
             }
@@ -876,7 +837,8 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public sealed class RankerMamlEvaluator : MamlEvaluatorBase
+    [BestFriend]
+    internal sealed class RankerMamlEvaluator : MamlEvaluatorBase
     {
         public sealed class Arguments : ArgumentsBase
         {
@@ -898,7 +860,7 @@ namespace Microsoft.ML.Runtime.Data
 
         private readonly string _groupSummaryFilename;
 
-        protected override IEvaluator Evaluator { get { return _evaluator; } }
+        private protected override IEvaluator Evaluator => _evaluator;
 
         public RankerMamlEvaluator(IHostEnvironment env, Arguments args)
             : base(args, env, MetadataUtils.Const.ScoreColumnKind.Ranking, "RankerMamlEvaluator")
@@ -916,14 +878,14 @@ namespace Microsoft.ML.Runtime.Data
             _groupIdCol = args.GroupIdColumn;
         }
 
-        protected override IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetInputColumnRolesCore(RoleMappedSchema schema)
+        private protected override IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetInputColumnRolesCore(RoleMappedSchema schema)
         {
             var cols = base.GetInputColumnRolesCore(schema);
             var groupIdCol = EvaluateUtils.GetColName(_groupIdCol, schema.Group, DefaultColumnNames.GroupId);
             return cols.Prepend(RoleMappedSchema.ColumnRole.Group.Bind(groupIdCol));
         }
 
-        protected override void PrintAdditionalMetricsCore(IChannel ch, Dictionary<string, IDataView>[] metrics)
+        private protected override void PrintAdditionalMetricsCore(IChannel ch, Dictionary<string, IDataView>[] metrics)
         {
             ch.AssertNonEmpty(metrics);
 
@@ -963,18 +925,18 @@ namespace Microsoft.ML.Runtime.Data
             return true;
         }
 
-        protected override IEnumerable<string> GetPerInstanceColumnsToSave(RoleMappedSchema schema)
+        private protected override IEnumerable<string> GetPerInstanceColumnsToSave(RoleMappedSchema schema)
         {
             Host.CheckValue(schema, nameof(schema));
-            Host.CheckValue(schema.Label, nameof(schema), "Data must contain a label column");
-            Host.CheckValue(schema.Group, nameof(schema), "Data must contain a group column");
+            Host.CheckParam(schema.Label.HasValue, nameof(schema), "Data must contain a label column");
+            Host.CheckParam(schema.Group.HasValue, nameof(schema), "Data must contain a group column");
 
             // The ranking evaluator outputs the label, group key and score columns.
-            yield return schema.Group.Name;
-            yield return schema.Label.Name;
-            var scoreInfo = EvaluateUtils.GetScoreColumnInfo(Host, schema.Schema, ScoreCol, nameof(Arguments.ScoreColumn),
+            yield return schema.Group.Value.Name;
+            yield return schema.Label.Value.Name;
+            var scoreCol = EvaluateUtils.GetScoreColumn(Host, schema.Schema, ScoreCol, nameof(Arguments.ScoreColumn),
                 MetadataUtils.Const.ScoreColumnKind.Ranking);
-            yield return scoreInfo.Name;
+            yield return scoreCol.Name;
 
             // Return the output columns.
             yield return RankerPerInstanceTransform.Ndcg;
@@ -990,7 +952,8 @@ namespace Microsoft.ML.Runtime.Data
         {
             get
             {
-                if (_discountMap == null)
+                double[] result = _discountMap;
+                if (result == null)
                 {
                     var discountMap = new Double[100]; //Hard to believe anyone would set truncation Level higher than 100
                     for (int i = 0; i < discountMap.Length; i++)
@@ -998,8 +961,9 @@ namespace Microsoft.ML.Runtime.Data
                         discountMap[i] = 1 / Math.Log(2 + i);
                     }
                     Interlocked.CompareExchange(ref _discountMap, discountMap, null);
+                    result = _discountMap;
                 }
-                return _discountMap;
+                return result;
             }
         }
 
@@ -1088,7 +1052,7 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public static partial class Evaluate
+    internal static partial class Evaluate
     {
         [TlcModule.EntryPoint(Name = "Models.RankerEvaluator", Desc = "Evaluates a ranking scored dataset.")]
         public static CommonOutputs.CommonEvaluateOutput Ranking(IHostEnvironment env, RankerMamlEvaluator.Arguments input)
@@ -1102,11 +1066,11 @@ namespace Microsoft.ML.Runtime.Data
             string weight;
             string name;
             MatchColumns(host, input, out label, out weight, out name);
-            ISchema schema = input.Data.Schema;
+            var schema = input.Data.Schema;
             string groupId = TrainUtils.MatchNameOrDefaultOrNull(host, schema,
                 nameof(RankerMamlEvaluator.Arguments.GroupIdColumn),
                 input.GroupIdColumn, DefaultColumnNames.GroupId);
-            var evaluator = new RankerMamlEvaluator(host, input);
+            IMamlEvaluator evaluator = new RankerMamlEvaluator(host, input);
             var data = new RoleMappedData(input.Data, label, null, groupId, weight, name);
             var metrics = evaluator.Evaluate(data);
 

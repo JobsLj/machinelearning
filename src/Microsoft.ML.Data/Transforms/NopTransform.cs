@@ -3,22 +3,25 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Model;
+using System.Collections.Generic;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Model;
 
 [assembly: LoadableClass(NopTransform.Summary, typeof(NopTransform), null, typeof(SignatureLoadDataTransform),
     "", NopTransform.LoaderSignature)]
 
 [assembly: LoadableClass(typeof(void), typeof(NopTransform), null, typeof(SignatureEntryPointModule), "NopTransform")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// A transform that does nothing.
     /// </summary>
-    public sealed class NopTransform : IDataTransform, IRowToRowMapper
+    [BestFriend]
+    internal sealed class NopTransform : IDataTransform, IRowToRowMapper
     {
         private readonly IHost _host;
 
@@ -71,7 +74,7 @@ namespace Microsoft.ML.Runtime.Data
             h.CheckValue(ctx, nameof(ctx));
             h.CheckValue(input, nameof(input));
             ctx.CheckAtModel(GetVersionInfo());
-            return h.Apply("Loading Model", ch => new NopTransform(h, ctx,  input));
+            return h.Apply("Loading Model", ch => new NopTransform(h, ctx, input));
         }
 
         private NopTransform(IHost host, ModelLoadContext ctx, IDataView input)
@@ -86,7 +89,7 @@ namespace Microsoft.ML.Runtime.Data
             // Nothing :)
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             _host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -96,40 +99,40 @@ namespace Microsoft.ML.Runtime.Data
             // Nothing :)
         }
 
-        public bool CanShuffle
+        public bool CanShuffle => Source.CanShuffle;
+
+        /// <summary>
+        /// Explicit implementation prevents Schema from being accessed from derived classes.
+        /// It's our first step to separate data produced by transform from transform.
+        /// </summary>
+        Schema IDataView.Schema => OutputSchema;
+
+        /// <summary>
+        /// Shape information of the produced output. Note that the input and the output of this transform (and their types) are identical.
+        /// </summary>
+        public Schema OutputSchema => Source.Schema;
+
+        public long? GetRowCount()
         {
-            get { return Source.CanShuffle; }
+            return Source.GetRowCount();
         }
 
-        public Schema Schema => Source.Schema;
+        public RowCursor GetRowCursor(IEnumerable<Schema.Column> columnsNeeded, Random rand = null)
+            => Source.GetRowCursor(columnsNeeded, rand);
 
-        public long? GetRowCount(bool lazy = true)
-        {
-            return Source.GetRowCount(lazy);
-        }
-
-        public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
-        {
-            return Source.GetRowCursor(predicate, rand);
-        }
-
-        public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator, Func<int, bool> predicate, int n, IRandom rand = null)
-        {
-            return Source.GetRowCursorSet(out consolidator, predicate, n, rand);
-        }
+        public RowCursor[] GetRowCursorSet(IEnumerable<Schema.Column> columnsNeeded, int n, Random rand = null)
+            => Source.GetRowCursorSet(columnsNeeded, n, rand);
 
         public Func<int, bool> GetDependencies(Func<int, bool> predicate)
         {
             return predicate;
         }
 
-        public IRow GetRow(IRow input, Func<int, bool> active, out Action disposer)
+        public Row GetRow(Row input, Func<int, bool> active)
         {
             Contracts.CheckValue(input, nameof(input));
             Contracts.CheckValue(active, nameof(active));
             Contracts.CheckParam(input.Schema == Source.Schema, nameof(input), "Schema of input row must be the same as the schema the mapper is bound to");
-
-            disposer = null;
             return input;
         }
 
@@ -146,7 +149,7 @@ namespace Microsoft.ML.Runtime.Data
             EntryPointUtils.CheckInputArgs(host, input);
 
             var xf = CreateIfNeeded(host, input.Data);
-            return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
+            return new CommonOutputs.TransformOutput { Model = new TransformModelImpl(env, xf, input.Data), OutputData = xf };
         }
     }
 }

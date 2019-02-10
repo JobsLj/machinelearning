@@ -2,15 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.FastTree.Internal;
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
     public abstract class RandomForestTrainerBase<TArgs, TTransformer, TModel> : FastTreeTrainerBase<TArgs, TTransformer, TModel>
         where TArgs : FastForestArgumentsBase, new()
-        where TModel : IPredictorProducing<float>
+        where TModel : class
         where TTransformer: ISingleFeaturePredictionTransformer<TModel>
     {
         private readonly bool _quantileEnabled;
@@ -27,14 +25,22 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <summary>
         /// Constructor invoked by the API code-path.
         /// </summary>
-        protected RandomForestTrainerBase(IHostEnvironment env, SchemaShape.Column label, string featureColumn,
-            string weightColumn = null, string groupIdColumn = null, bool quantileEnabled = false, Action<TArgs> advancedSettings = null)
-            : base(env, label, featureColumn, weightColumn, groupIdColumn, advancedSettings)
+        protected RandomForestTrainerBase(IHostEnvironment env,
+            SchemaShape.Column label,
+            string featureColumn,
+            string weightColumn,
+            string groupIdColumn,
+            int numLeaves,
+            int numTrees,
+            int minDatapointsInLeaves,
+            double learningRate,
+            bool quantileEnabled = false)
+            : base(env, label, featureColumn, weightColumn, null, numLeaves, numTrees, minDatapointsInLeaves)
         {
             _quantileEnabled = quantileEnabled;
         }
 
-        protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
+        private protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
         {
             Host.CheckValue(ch, nameof(ch));
             IGradientAdjuster gradientWrapper = MakeGradientWrapper(ch);
@@ -55,7 +61,7 @@ namespace Microsoft.ML.Runtime.FastTree
         {
         }
 
-        protected override TreeLearner ConstructTreeLearner(IChannel ch)
+        private protected override TreeLearner ConstructTreeLearner(IChannel ch)
         {
             return new RandomForestLeastSquaresTreeLearner(
                        TrainSet, Args.NumLeaves, Args.MinDocumentsInLeafs, Args.EntropyCoefficient,

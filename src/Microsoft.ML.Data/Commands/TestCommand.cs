@@ -3,19 +3,24 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
 
 [assembly: LoadableClass(TestCommand.Summary, typeof(TestCommand), typeof(TestCommand.Arguments), typeof(SignatureCommand),
     "Test Predictor", "Test")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    // This command is essentially chaining together Score and Evaluate, without the need to save the intermediary scored data.
-    public sealed class TestCommand : DataCommand.ImplBase<TestCommand.Arguments>
+    /// <summary>
+    /// This command is essentially chaining together <see cref="ScoreCommand"/> and
+    /// <see cref="EvaluateCommand"/>, without the need to save the intermediary scored data.
+    /// </summary>
+    [BestFriend]
+    internal sealed class TestCommand : DataCommand.ImplBase<TestCommand.Arguments>
     {
         public sealed class Arguments : DataCommand.ArgumentsBase
         {
@@ -34,8 +39,10 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Name column name", ShortName = "name", SortOrder = 6)]
             public string NameColumn = DefaultColumnNames.Name;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
-            public KeyValuePair<string, string>[] CustomColumn;
+            [Argument(ArgumentType.LastOccurenceWins,
+                HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'",
+                Name = "CustomColumn", ShortName = "col", SortOrder = 10)]
+            public KeyValuePair<string, string>[] CustomColumns;
 
             [Argument(ArgumentType.Multiple, HelpText = "Scorer to use", NullName = "<Auto>", SortOrder = 101, SignatureType = typeof(SignatureDataScorer))]
             public IComponentFactory<IDataView, ISchemaBoundMapper, RoleMappedSchema, IDataScorerTransform> Scorer;
@@ -90,7 +97,7 @@ namespace Microsoft.ML.Runtime.Data
             ch.AssertValue(loader);
 
             ch.Trace("Binding columns");
-            ISchema schema = loader.Schema;
+            var schema = loader.Schema;
             string label = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Args.LabelColumn),
                 Args.LabelColumn, DefaultColumnNames.Label);
             string features = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Args.FeatureColumn),
@@ -101,7 +108,7 @@ namespace Microsoft.ML.Runtime.Data
                 Args.WeightColumn, DefaultColumnNames.Weight);
             string name = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Args.NameColumn),
                 Args.NameColumn, DefaultColumnNames.Name);
-            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumn);
+            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumns);
 
             // Score.
             ch.Trace("Scoring and evaluating");

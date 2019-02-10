@@ -2,19 +2,21 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Training;
 using System;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Training;
+using Microsoft.ML.Transforms;
 
-namespace Microsoft.ML.Runtime.Learners
+namespace Microsoft.ML.Trainers
 {
     public abstract class StochasticTrainerBase<TTransformer, TModel> : TrainerEstimatorBase<TTransformer, TModel>
         where TTransformer : ISingleFeaturePredictionTransformer<TModel>
-        where TModel : IPredictor
+        where TModel : class
     {
-        public StochasticTrainerBase(IHost host, SchemaShape.Column feature, SchemaShape.Column label, SchemaShape.Column weight = null)
+        public StochasticTrainerBase(IHost host, SchemaShape.Column feature, SchemaShape.Column label, SchemaShape.Column weight = default)
             : base(host, feature, label, weight)
         {
         }
@@ -27,22 +29,24 @@ namespace Microsoft.ML.Runtime.Learners
         private static readonly TrainerInfo _info = new TrainerInfo();
         public override TrainerInfo Info => _info;
 
-        protected override TModel TrainModelCore(TrainContext context)
+        private protected override TModel TrainModelCore(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
             using (var ch = Host.Start("Training"))
             {
                 var preparedData = PrepareDataFromTrainingExamples(ch, context.TrainingSet, out int weightSetCount);
                 var initPred = context.InitialPredictor;
-                var linInitPred = (initPred as CalibratedPredictorBase)?.SubPredictor as LinearPredictor;
-                linInitPred = linInitPred ?? initPred as LinearPredictor;
+                // Try extract linear model from calibrated predictor.
+                var linInitPred = (initPred as IWeaklyTypedCalibratedModelParameters)?.WeeklyTypedSubModel as LinearModelParameters;
+                // If the initial predictor is not calibrated, it should be a linear model.
+                linInitPred = linInitPred ?? initPred as LinearModelParameters;
                 Host.CheckParam(context.InitialPredictor == null || linInitPred != null, nameof(context),
                     "Initial predictor was not a linear predictor.");
                 return TrainCore(ch, preparedData, linInitPred, weightSetCount);
             }
         }
 
-        protected virtual int ComputeNumThreads(FloatLabelCursor.Factory cursorFactory)
+        private protected virtual int ComputeNumThreads(FloatLabelCursor.Factory cursorFactory)
         {
             int maxThreads = Math.Min(8, Math.Max(1, Environment.ProcessorCount / 2));
             if (0 < Host.ConcurrencyFactor && Host.ConcurrencyFactor < maxThreads)
@@ -60,7 +64,7 @@ namespace Microsoft.ML.Runtime.Learners
         /// <param name="weightSetCount">Gets the length of weights and bias array. For binary classification and regression,
         /// this is 1. For multi-class classification, this equals the number of classes on the label.</param>
         /// <returns>A potentially modified version of <paramref name="examples"/></returns>
-        protected RoleMappedData PrepareDataFromTrainingExamples(IChannel ch, RoleMappedData examples, out int weightSetCount)
+        private protected RoleMappedData PrepareDataFromTrainingExamples(IChannel ch, RoleMappedData examples, out int weightSetCount)
         {
             ch.AssertValue(examples);
             CheckLabel(examples, out weightSetCount);
@@ -71,12 +75,12 @@ namespace Microsoft.ML.Runtime.Learners
                 idvToFeedTrain = idvToShuffle;
             else
             {
-                var shuffleArgs = new ShuffleTransform.Arguments
+                var shuffleArgs = new RowShufflingTransformer.Options
                 {
                     PoolOnly = false,
                     ForceShuffle = ShuffleData
                 };
-                idvToFeedTrain = new ShuffleTransform(Host, shuffleArgs, idvToShuffle);
+                idvToFeedTrain = new RowShufflingTransformer(Host, shuffleArgs, idvToShuffle);
             }
 
             ch.Assert(idvToFeedTrain.CanShuffle);
@@ -84,18 +88,17 @@ namespace Microsoft.ML.Runtime.Learners
             var roles = examples.Schema.GetColumnRoleNames();
             var examplesToFeedTrain = new RoleMappedData(idvToFeedTrain, roles);
 
-            ch.AssertValue(examplesToFeedTrain.Schema.Label);
-            ch.AssertValue(examplesToFeedTrain.Schema.Feature);
-            if (examples.Schema.Weight != null)
-                ch.AssertValue(examplesToFeedTrain.Schema.Weight);
+            ch.Assert(examplesToFeedTrain.Schema.Label.HasValue);
+            ch.Assert(examplesToFeedTrain.Schema.Feature.HasValue);
+            if (examples.Schema.Weight.HasValue)
+                ch.Assert(examplesToFeedTrain.Schema.Weight.HasValue);
 
-            int numFeatures = examplesToFeedTrain.Schema.Feature.Type.VectorSize;
-            ch.Check(numFeatures > 0, "Training set has no features, aborting training.");
+            ch.Check(examplesToFeedTrain.Schema.Feature.Value.Type is VectorType vecType && vecType.Size > 0, "Training set has no features, aborting training.");
             return examplesToFeedTrain;
         }
 
-        protected abstract TModel TrainCore(IChannel ch, RoleMappedData data, LinearPredictor predictor, int weightSetCount);
+        private protected abstract TModel TrainCore(IChannel ch, RoleMappedData data, LinearModelParameters predictor, int weightSetCount);
 
-        protected abstract void CheckLabel(RoleMappedData examples, out int weightSetCount);
+        private protected abstract void CheckLabel(RoleMappedData examples, out int weightSetCount);
     }
 }

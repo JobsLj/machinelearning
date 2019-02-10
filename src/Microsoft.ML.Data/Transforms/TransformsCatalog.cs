@@ -2,12 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Microsoft.ML.Runtime
+namespace Microsoft.ML
 {
     /// <summary>
     /// Similar to training context, a transform context is an object serving as a 'catalog' of available transforms.
@@ -17,10 +12,30 @@ namespace Microsoft.ML.Runtime
     {
         internal IHostEnvironment Environment { get; }
 
+        /// <summary>
+        /// The list of operations over categorical data.
+        /// </summary>
         public CategoricalTransforms Categorical { get; }
-        public Conversions Conversion { get; }
+
+        /// <summary>
+        /// The list of operations for data type conversion.
+        /// </summary>
+        public ConversionTransforms Conversion { get; }
+
+        /// <summary>
+        /// The list of operations for processing text data.
+        /// </summary>
         public TextTransforms Text { get; }
-        public ProjectionTransforms Projections { get; }
+
+        /// <summary>
+        /// The list of operations for data projection.
+        /// </summary>
+        public ProjectionTransforms Projection { get; }
+
+        /// <summary>
+        /// The list of operations for selecting features based on some criteria.
+        /// </summary>
+        public FeatureSelectionTransforms FeatureSelection { get; }
 
         internal TransformsCatalog(IHostEnvironment env)
         {
@@ -28,9 +43,10 @@ namespace Microsoft.ML.Runtime
             Environment = env;
 
             Categorical = new CategoricalTransforms(this);
-            Conversion = new Conversions(this);
+            Conversion = new ConversionTransforms(this);
             Text = new TextTransforms(this);
-            Projections = new ProjectionTransforms(this);
+            Projection = new ProjectionTransforms(this);
+            FeatureSelection = new FeatureSelectionTransforms(this);
         }
 
         public abstract class SubCatalogBase
@@ -55,11 +71,11 @@ namespace Microsoft.ML.Runtime
         }
 
         /// <summary>
-        /// The catalog of rescaling operations.
+        /// The catalog of type conversion operations.
         /// </summary>
-        public sealed class Conversions : SubCatalogBase
+        public sealed class ConversionTransforms : SubCatalogBase
         {
-            public Conversions(TransformsCatalog owner) : base(owner)
+            internal ConversionTransforms(TransformsCatalog owner) : base(owner)
             {
             }
         }
@@ -69,7 +85,7 @@ namespace Microsoft.ML.Runtime
         /// </summary>
         public sealed class TextTransforms : SubCatalogBase
         {
-            public TextTransforms(TransformsCatalog owner) : base(owner)
+            internal TextTransforms(TransformsCatalog owner) : base(owner)
             {
             }
         }
@@ -79,7 +95,17 @@ namespace Microsoft.ML.Runtime
         /// </summary>
         public sealed class ProjectionTransforms : SubCatalogBase
         {
-            public ProjectionTransforms(TransformsCatalog owner) : base(owner)
+            internal ProjectionTransforms(TransformsCatalog owner) : base(owner)
+            {
+            }
+        }
+
+        /// <summary>
+        /// The catalog of feature selection operations.
+        /// </summary>
+        public sealed class FeatureSelectionTransforms : SubCatalogBase
+        {
+            internal FeatureSelectionTransforms(TransformsCatalog owner) : base(owner)
             {
             }
         }

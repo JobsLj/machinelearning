@@ -3,19 +3,32 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeries;
+using Microsoft.ML.TimeSeriesProcessing;
+using static Microsoft.ML.TimeSeriesProcessing.SequentialAnomalyDetectionTransformBase<System.Single, Microsoft.ML.TimeSeriesProcessing.SsaAnomalyDetectionBase.State>;
 
-[assembly: LoadableClass(SsaChangePointDetector.Summary, typeof(SsaChangePointDetector), typeof(SsaChangePointDetector.Arguments), typeof(SignatureDataTransform),
+[assembly: LoadableClass(SsaChangePointDetector.Summary, typeof(IDataTransform), typeof(SsaChangePointDetector), typeof(SsaChangePointDetector.Arguments), typeof(SignatureDataTransform),
     SsaChangePointDetector.UserName, SsaChangePointDetector.LoaderSignature, SsaChangePointDetector.ShortName)]
-[assembly: LoadableClass(SsaChangePointDetector.Summary, typeof(SsaChangePointDetector), null, typeof(SignatureLoadDataTransform),
+
+[assembly: LoadableClass(SsaChangePointDetector.Summary, typeof(IDataTransform), typeof(SsaChangePointDetector), null, typeof(SignatureLoadDataTransform),
     SsaChangePointDetector.UserName, SsaChangePointDetector.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+[assembly: LoadableClass(SsaChangePointDetector.Summary, typeof(SsaChangePointDetector), null, typeof(SignatureLoadModel),
+    SsaChangePointDetector.UserName, SsaChangePointDetector.LoaderSignature)]
+
+[assembly: LoadableClass(typeof(IRowMapper), typeof(SsaChangePointDetector), null, typeof(SignatureLoadRowMapper),
+   SsaChangePointDetector.UserName, SsaChangePointDetector.LoaderSignature)]
+
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// This class implements the change point detector transform based on Singular Spectrum modeling of the time-series.
@@ -24,9 +37,9 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
     public sealed class SsaChangePointDetector : SsaAnomalyDetectionBase
     {
         internal const string Summary = "This transform detects the change-points in a seasonal time-series using Singular Spectrum Analysis (SSA).";
-        public const string LoaderSignature = "SsaChangePointDetector";
-        public const string UserName = "SSA Change Point Detection";
-        public const string ShortName = "chgpnt";
+        internal const string LoaderSignature = "SsaChangePointDetector";
+        internal const string UserName = "SSA Change Point Detection";
+        internal const string ShortName = "chgpnt";
 
         public sealed class Arguments : TransformInputBase
         {
@@ -38,7 +51,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 SortOrder = 2)]
             public string Name;
 
-            [Argument(ArgumentType.AtMostOnce, HelpText = "The change history length.", ShortName = "wnd",
+            [Argument(ArgumentType.AtMostOnce, HelpText = "The length of the sliding window on p-values for computing the martingale score.", ShortName = "wnd",
                 SortOrder = 102)]
             public int ChangeHistoryLength = 20;
 
@@ -93,8 +106,33 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 loaderAssemblyName: typeof(SsaChangePointDetector).Assembly.FullName);
         }
 
-        public SsaChangePointDetector(IHostEnvironment env, Arguments args, IDataView input)
-            : base(new BaseArguments(args), LoaderSignature, env, input)
+        internal SsaChangePointDetector(IHostEnvironment env, Arguments args, IDataView input)
+            : this(env, args)
+        {
+            Model.Train(new RoleMappedData(input, null, InputColumnName));
+        }
+
+        // Factory method for SignatureDataTransform.
+        private static IDataTransform Create(IHostEnvironment env, Arguments args, IDataView input)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(args, nameof(args));
+            env.CheckValue(input, nameof(input));
+
+            return new SsaChangePointDetector(env, args, input).MakeDataTransform(input);
+        }
+
+        internal override IStatefulTransformer Clone()
+        {
+            var clone = (SsaChangePointDetector)MemberwiseClone();
+            clone.Model = clone.Model.Clone();
+            clone.StateRef = (State)clone.StateRef.Clone();
+            clone.StateRef.InitState(clone, Host);
+            return clone;
+        }
+
+        internal SsaChangePointDetector(IHostEnvironment env, Arguments args)
+            : base(new BaseArguments(args), LoaderSignature, env)
         {
             switch (Martingale)
             {
@@ -113,8 +151,28 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             }
         }
 
-        public SsaChangePointDetector(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
-            : base(env, ctx, LoaderSignature, input)
+        // Factory method for SignatureLoadDataTransform.
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(ctx, nameof(ctx));
+            env.CheckValue(input, nameof(input));
+
+            return new SsaChangePointDetector(env, ctx).MakeDataTransform(input);
+        }
+
+        // Factory method for SignatureLoadModel.
+        private static SsaChangePointDetector Create(IHostEnvironment env, ModelLoadContext ctx)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(ctx, nameof(ctx));
+            ctx.CheckAtModel(GetVersionInfo());
+
+            return new SsaChangePointDetector(env, ctx);
+        }
+
+        internal SsaChangePointDetector(IHostEnvironment env, ModelLoadContext ctx)
+            : base(env, ctx, LoaderSignature)
         {
             // *** Binary format ***
             // <base>
@@ -125,7 +183,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(IsAdaptive == false);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -139,7 +197,102 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // *** Binary format ***
             // <base>
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
+        }
+
+        // Factory method for SignatureLoadRowMapper.
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, Schema inputSchema)
+            => Create(env, ctx).MakeRowMapper(inputSchema);
+    }
+
+    /// <summary>
+    /// Estimator for <see cref="SsaChangePointDetector"/>
+    /// </summary>
+    /// <p>Example code can be found by searching for <i>SsaChangePointDetector</i> in <a href='https://github.com/dotnet/machinelearning'>ML.NET.</a></p>
+    /// <example>
+    /// <format type="text/markdown">
+    /// <![CDATA[
+    /// [!code-csharp[MF](~/../docs/samples/docs/samples/Microsoft.ML.Samples/Dynamic/SsaChangePointDetectorTransform.cs)]
+    /// ]]>
+    /// </format>
+    /// </example>
+    public sealed class SsaChangePointEstimator : IEstimator<SsaChangePointDetector>
+    {
+        private readonly IHost _host;
+        private readonly SsaChangePointDetector.Arguments _args;
+
+        /// <summary>
+        /// Create a new instance of <see cref="SsaChangePointEstimator"/>
+        /// </summary>
+        /// <param name="env">Host Environment.</param>
+        /// <param name="outputColumnName">Name of the column resulting from the transformation of <paramref name="inputColumnName"/>.
+        /// Column is a vector of type double and size 4. The vector contains Alert, Raw Score, P-Value and Martingale score as first four values.</param>
+        /// <param name="confidence">The confidence for change point detection in the range [0, 100].</param>
+        /// <param name="trainingWindowSize">The number of points from the beginning of the sequence used for training.</param>
+        /// <param name="changeHistoryLength">The size of the sliding window for computing the p-value.</param>
+        /// <param name="seasonalityWindowSize">An upper bound on the largest relevant seasonality in the input time-series.</param>
+        /// <param name="inputColumnName">Name of column to transform. If set to <see langword="null"/>, the value of the <paramref name="outputColumnName"/> will be used as source.</param>
+        /// <param name="errorFunction">The function used to compute the error between the expected and the observed value.</param>
+        /// <param name="martingale">The martingale used for scoring.</param>
+        /// <param name="eps">The epsilon parameter for the Power martingale.</param>
+        public SsaChangePointEstimator(IHostEnvironment env, string outputColumnName,
+            int confidence,
+            int changeHistoryLength,
+            int trainingWindowSize,
+            int seasonalityWindowSize,
+            string inputColumnName = null,
+            ErrorFunctionUtils.ErrorFunction errorFunction = ErrorFunctionUtils.ErrorFunction.SignedDifference,
+            MartingaleType martingale = MartingaleType.Power,
+            double eps = 0.1)
+            : this(env, new SsaChangePointDetector.Arguments
+                {
+                    Name = outputColumnName,
+                    Source = inputColumnName ?? outputColumnName,
+                    Confidence = confidence,
+                    ChangeHistoryLength = changeHistoryLength,
+                    TrainingWindowSize = trainingWindowSize,
+                    SeasonalWindowSize = seasonalityWindowSize,
+                    Martingale = martingale,
+                    PowerMartingaleEpsilon = eps,
+                    ErrorFunction = errorFunction
+                })
+        {
+        }
+
+        public SsaChangePointEstimator(IHostEnvironment env, SsaChangePointDetector.Arguments args)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            _host = env.Register(nameof(SsaChangePointEstimator));
+
+            _host.CheckNonEmpty(args.Name, nameof(args.Name));
+            _host.CheckNonEmpty(args.Source, nameof(args.Source));
+
+            _args = args;
+        }
+
+        public SsaChangePointDetector Fit(IDataView input)
+        {
+            _host.CheckValue(input, nameof(input));
+            return new SsaChangePointDetector(_host, _args, input);
+        }
+
+        public SchemaShape GetOutputSchema(SchemaShape inputSchema)
+        {
+            _host.CheckValue(inputSchema, nameof(inputSchema));
+
+            if (!inputSchema.TryFindColumn(_args.Source, out var col))
+                throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", _args.Source);
+            if (col.ItemType != NumberType.R4)
+                throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", _args.Source, "float", col.GetTypeString());
+
+            var metadata = new List<SchemaShape.Column>() {
+                new SchemaShape.Column(MetadataUtils.Kinds.SlotNames, SchemaShape.Column.VectorKind.Vector, TextType.Instance, false)
+            };
+            var resultDic = inputSchema.ToDictionary(x => x.Name);
+            resultDic[_args.Name] = new SchemaShape.Column(
+                _args.Name, SchemaShape.Column.VectorKind.Vector, NumberType.R8, false, new SchemaShape(metadata));
+
+            return new SchemaShape(resultDic.Values);
         }
     }
 }

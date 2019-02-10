@@ -2,16 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
-using Microsoft.ML.Runtime.SymSgd;
-using System;
-using System.IO;
 using System.Linq;
+using Microsoft.ML.Data;
+using Microsoft.ML.Trainers.HalLearners;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Trainers;
 using Xunit;
 
 namespace Microsoft.ML.Tests.TrainerEstimators
@@ -22,8 +17,13 @@ namespace Microsoft.ML.Tests.TrainerEstimators
         public void TestEstimatorSymSgdClassificationTrainer()
         {
             (var pipe, var dataView) = GetBinaryClassificationPipeline();
-            pipe = pipe.Append(new SymSgdClassificationTrainer(Env, "Features", "Label"));
-            TestEstimatorCore(pipe, dataView);
+            var trainer = new SymSgdClassificationTrainer(Env, new SymSgdClassificationTrainer.Options());
+            var pipeWithTrainer = pipe.Append(trainer);
+            TestEstimatorCore(pipeWithTrainer, dataView);
+
+            var transformedDataView = pipe.Fit(dataView).Transform(dataView);
+            var model = trainer.Fit(transformedDataView);
+            trainer.Train(transformedDataView, model.Model);
             Done();
         }
 
@@ -33,13 +33,14 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             (var pipe, var dataView) = GetBinaryClassificationPipeline();
             var transformedData = pipe.Fit(dataView).Transform(dataView);
 
-            var initPredictor = new LinearClassificationTrainer(Env, "Features", "Label").Fit(transformedData);
+            var initPredictor = ML.BinaryClassification.Trainers.StochasticDualCoordinateAscent().Fit(transformedData);
             var data = initPredictor.Transform(transformedData);
 
-            var withInitPredictor = new SymSgdClassificationTrainer(Env, "Features", "Label").Train(transformedData, initialPredictor: initPredictor.Model);
+            var withInitPredictor = new SymSgdClassificationTrainer(Env, new SymSgdClassificationTrainer.Options()).Train(transformedData,
+                initialPredictor: initPredictor.Model as CalibratedModelParametersBase<LinearBinaryModelParameters, PlattCalibrator>);
             var outInitData = withInitPredictor.Transform(transformedData);
 
-            var notInitPredictor = new SymSgdClassificationTrainer(Env, "Features", "Label").Train(transformedData);
+            var notInitPredictor = new SymSgdClassificationTrainer(Env, new SymSgdClassificationTrainer.Options()).Train(transformedData);
             var outNoInitData = notInitPredictor.Transform(transformedData);
 
             int numExamples = 10;

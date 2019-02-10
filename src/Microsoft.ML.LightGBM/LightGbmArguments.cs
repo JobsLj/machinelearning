@@ -3,26 +3,26 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
-using System.Text;
 using System.Reflection;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.LightGBM;
+using System.Text;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.LightGBM;
 
-[assembly: LoadableClass(typeof(LightGbmArguments.TreeBooster), typeof(LightGbmArguments.TreeBooster.Arguments),
-    typeof(SignatureLightGBMBooster), LightGbmArguments.TreeBooster.FriendlyName, LightGbmArguments.TreeBooster.Name)]
-[assembly: LoadableClass(typeof(LightGbmArguments.DartBooster), typeof(LightGbmArguments.DartBooster.Arguments),
-    typeof(SignatureLightGBMBooster), LightGbmArguments.DartBooster.FriendlyName, LightGbmArguments.DartBooster.Name)]
-[assembly: LoadableClass(typeof(LightGbmArguments.GossBooster), typeof(LightGbmArguments.GossBooster.Arguments),
-    typeof(SignatureLightGBMBooster), LightGbmArguments.GossBooster.FriendlyName, LightGbmArguments.GossBooster.Name)]
+[assembly: LoadableClass(typeof(Options.TreeBooster), typeof(Options.TreeBooster.Arguments),
+    typeof(SignatureLightGBMBooster), Options.TreeBooster.FriendlyName, Options.TreeBooster.Name)]
+[assembly: LoadableClass(typeof(Options.DartBooster), typeof(Options.DartBooster.Arguments),
+    typeof(SignatureLightGBMBooster), Options.DartBooster.FriendlyName, Options.DartBooster.Name)]
+[assembly: LoadableClass(typeof(Options.GossBooster), typeof(Options.GossBooster.Arguments),
+    typeof(SignatureLightGBMBooster), Options.GossBooster.FriendlyName, Options.GossBooster.Name)]
 
-[assembly: EntryPointModule(typeof(LightGbmArguments.TreeBooster.Arguments))]
-[assembly: EntryPointModule(typeof(LightGbmArguments.DartBooster.Arguments))]
-[assembly: EntryPointModule(typeof(LightGbmArguments.GossBooster.Arguments))]
+[assembly: EntryPointModule(typeof(Options.TreeBooster.Arguments))]
+[assembly: EntryPointModule(typeof(Options.DartBooster.Arguments))]
+[assembly: EntryPointModule(typeof(Options.GossBooster.Arguments))]
 
-namespace Microsoft.ML.Runtime.LightGBM
+namespace Microsoft.ML.LightGBM
 {
     public delegate void SignatureLightGBMBooster();
 
@@ -39,7 +39,7 @@ namespace Microsoft.ML.Runtime.LightGBM
     /// Parameters names comes from LightGBM library.
     /// See https://github.com/Microsoft/LightGBM/blob/master/docs/Parameters.rst.
     /// </summary>
-    public sealed class LightGbmArguments : LearnerInputBaseWithGroupId
+    public sealed class Options : LearnerInputBaseWithGroupId
     {
         public abstract class BoosterParameter<TArgs> : IBoosterParameter
             where TArgs : class, new()
@@ -56,9 +56,16 @@ namespace Microsoft.ML.Runtime.LightGBM
             /// </summary>
             public virtual void UpdateParameters(Dictionary<string, object> res)
             {
-                FieldInfo[] fields = Args.GetType().GetFields();
+                FieldInfo[] fields = Args.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 foreach (var field in fields)
+                {
+                    var attribute = field.GetCustomAttribute<ArgumentAttribute>(false);
+
+                    if (attribute == null)
+                        continue;
+
                     res[GetArgName(field.Name)] = field.GetValue(Args);
+                }
             }
         }
 
@@ -82,8 +89,10 @@ namespace Microsoft.ML.Runtime.LightGBM
             return strBuf.ToString();
         }
 
+        [BestFriend]
         internal static class Defaults
         {
+            [BestFriend]
             internal const int NumBoostRound = 100;
         }
 

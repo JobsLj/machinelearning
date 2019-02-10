@@ -5,18 +5,17 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
+using Microsoft.Data.DataView;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Training;
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Ensemble.OutputCombiners
 {
-    using ColumnRole = RoleMappedSchema.ColumnRole;
-    public abstract class BaseStacking<TOutput> : IStackingTrainer<TOutput>
+    internal abstract class BaseStacking<TOutput> : IStackingTrainer<TOutput>, ICanSaveModel
     {
         public abstract class ArgumentsBase
         {
@@ -28,13 +27,13 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             internal abstract IComponentFactory<ITrainer<IPredictorProducing<TOutput>>> GetPredictorFactory();
         }
 
-        protected readonly IComponentFactory<ITrainer<IPredictorProducing<TOutput>>> BasePredictorType;
-        protected readonly IHost Host;
-        protected IPredictorProducing<TOutput> Meta;
+        private protected readonly IComponentFactory<ITrainer<IPredictorProducing<TOutput>>> BasePredictorType;
+        private protected readonly IHost Host;
+        private protected IPredictorProducing<TOutput> Meta;
 
         public Single ValidationDatasetProportion { get; }
 
-        internal BaseStacking(IHostEnvironment env, string name, ArgumentsBase args)
+        private protected BaseStacking(IHostEnvironment env, string name, ArgumentsBase args)
         {
             Contracts.AssertValue(env);
             env.AssertNonWhiteSpace(name);
@@ -49,7 +48,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             Host.CheckValue(BasePredictorType, nameof(BasePredictorType));
         }
 
-        internal BaseStacking(IHostEnvironment env, string name, ModelLoadContext ctx)
+        private protected BaseStacking(IHostEnvironment env, string name, ModelLoadContext ctx)
         {
             Contracts.AssertValue(env);
             env.AssertNonWhiteSpace(name);
@@ -68,7 +67,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             CheckMeta();
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             Host.Check(Meta != null, "Can't save an untrained Stacking combiner");
             Host.CheckValue(ctx, nameof(ctx));
@@ -104,7 +103,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 (ref TOutput dst, TOutput[] src, Single[] weights) =>
                 {
                     FillFeatureBuffer(src, ref feat);
-                    map(ref feat, ref dst);
+                    map(in feat, ref dst);
                 };
             return res;
         }
@@ -117,13 +116,13 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
 
             var ivm = Meta as IValueMapper;
             Contracts.Check(ivm != null, "Stacking predictor doesn't implement the expected interface");
-            if (!ivm.InputType.IsVector || ivm.InputType.ItemType != NumberType.Float)
+            if (!(ivm.InputType is VectorType vectorType) || vectorType.ItemType != NumberType.Float)
                 throw Contracts.Except("Stacking predictor input type is unsupported: {0}", ivm.InputType);
             if (ivm.OutputType.RawType != typeof(TOutput))
                 throw Contracts.Except("Stacking predictor output type is unsupported: {0}", ivm.OutputType);
         }
 
-        public void Train(List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models, RoleMappedData data, IHostEnvironment env)
+        public void Train(List<FeatureSubsetModel<TOutput>> models, RoleMappedData data, IHostEnvironment env)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(Stacking.LoadName);
@@ -159,11 +158,11 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                             var model = models[i];
                             if (model.SelectedFeatures != null)
                             {
-                                EnsembleUtils.SelectFeatures(ref cursor.Features, model.SelectedFeatures, model.Cardinality, ref vBuffers[i]);
-                                maps[i](ref vBuffers[i], ref predictions[i]);
+                                EnsembleUtils.SelectFeatures(in cursor.Features, model.SelectedFeatures, model.Cardinality, ref vBuffers[i]);
+                                maps[i](in vBuffers[i], ref predictions[i]);
                             }
                             else
-                                maps[i](ref cursor.Features, ref predictions[i]);
+                                maps[i](in cursor.Features, ref predictions[i]);
                         });
 
                         Utils.EnsureSize(ref labels, count + 1);

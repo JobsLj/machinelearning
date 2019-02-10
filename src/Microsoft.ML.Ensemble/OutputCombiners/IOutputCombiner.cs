@@ -4,10 +4,10 @@
 
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Ensemble.OutputCombiners
 {
     /// <summary>
     /// Signature for combiners.
@@ -28,9 +28,9 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
         Combiner<TOutput> GetCombiner();
     }
 
-    public interface IStackingTrainer<TOutput>
+    internal interface IStackingTrainer<TOutput>
     {
-        void Train(List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models, RoleMappedData data, IHostEnvironment env);
+        void Train(List<FeatureSubsetModel<TOutput>> models, RoleMappedData data, IHostEnvironment env);
         Single ValidationDatasetProportion { get; }
     }
 

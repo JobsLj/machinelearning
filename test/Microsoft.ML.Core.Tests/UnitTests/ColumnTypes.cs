@@ -2,13 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.ImageAnalytics;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Data;
+using Microsoft.ML.ImageAnalytics;
 using Xunit;
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed class ColumnTypeTests
     {
@@ -17,12 +16,15 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var dict = new Dictionary<ColumnType, string>();
             // add PrimitiveTypes, KeyType & corresponding VectorTypes
-            PrimitiveType tmp;
             VectorType tmp1, tmp2;
-            foreach (var kind in (DataKind[])Enum.GetValues(typeof(DataKind)))
+            var types = new PrimitiveType[] { NumberType.I1, NumberType.I2, NumberType.I4, NumberType.I8,
+                NumberType.U1, NumberType.U2, NumberType.U4, NumberType.U8, NumberType.UG,
+                TextType.Instance, BoolType.Instance, DateTimeType.Instance, DateTimeOffsetType.Instance, TimeSpanType.Instance };
+
+            foreach (var type in types)
             {
-                tmp = PrimitiveType.FromKind(kind);
-                if(dict.ContainsKey(tmp) && dict[tmp] != tmp.ToString())
+                var tmp = type;
+                if (dict.ContainsKey(tmp) && dict[tmp] != tmp.ToString())
                     Assert.True(false, dict[tmp] + " and " + tmp.ToString() + " are duplicates.");
                 dict[tmp] = tmp.ToString();
                 for (int size = 0; size < 5; size++)
@@ -41,13 +43,14 @@ namespace Microsoft.ML.Runtime.RunTests
                 }
 
                 // KeyType & Vector
-                if (!KeyType.IsValidDataKind(kind))
+                var rawType = tmp.RawType;
+                if (!KeyType.IsValidDataType(rawType))
                     continue;
                 for (ulong min = 0; min < 5; min++)
                 {
-                    for (var count = 0; count < 5; count++)
+                    for (var count = 1; count < 5; count++)
                     {
-                        tmp = new KeyType(kind, min, count);
+                        tmp = new KeyType(rawType, count);
                         if (dict.ContainsKey(tmp) && dict[tmp] != tmp.ToString())
                             Assert.True(false, dict[tmp] + " and " + tmp.ToString() + " are duplicates.");
                         dict[tmp] = tmp.ToString();
@@ -66,7 +69,8 @@ namespace Microsoft.ML.Runtime.RunTests
                             }
                         }
                     }
-                    tmp = new KeyType(kind, min, 0, false);
+                    Assert.True(rawType.TryGetDataKind(out var kind));
+                    tmp = new KeyType(rawType, kind.ToMaxInt());
                     if (dict.ContainsKey(tmp) && dict[tmp] != tmp.ToString())
                         Assert.True(false, dict[tmp] + " and " + tmp.ToString() + " are duplicates.");
                     dict[tmp] = tmp.ToString();

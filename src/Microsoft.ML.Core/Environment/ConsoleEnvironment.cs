@@ -2,20 +2,21 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using Stopwatch = System.Diagnostics.Stopwatch;
 
-    public sealed class ConsoleEnvironment : HostEnvironmentBase<ConsoleEnvironment>
+    /// <summary>
+    /// The console environment. As its name suggests, should be limited to those applications that deliberately want
+    /// console functionality.
+    /// </summary>
+    [BestFriend]
+    internal sealed class ConsoleEnvironment : HostEnvironmentBase<ConsoleEnvironment>
     {
         public const string ComponentHistoryKey = "ComponentHistory";
 
@@ -324,11 +325,15 @@ namespace Microsoft.ML.Runtime.Data
                 Root._consoleWriter.ChannelStarted(this);
             }
 
-            protected override void DisposeCore()
+            protected override void Dispose(bool disposing)
             {
-                Watch.Stop();
-                Root._consoleWriter.ChannelDisposed(this);
-                base.DisposeCore();
+                if(disposing)
+                {
+                    Watch.Stop();
+                    Root._consoleWriter.ChannelDisposed(this);
+                }
+
+                base.Dispose(disposing);
             }
         }
 
@@ -361,7 +366,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="conc">Concurrency level. Set to 1 to run single-threaded. Set to 0 to pick automatically.</param>
         /// <param name="outWriter">Text writer to print normal messages to.</param>
         /// <param name="errWriter">Text writer to print error messages to.</param>
-        private ConsoleEnvironment(IRandom rand, bool verbose = false,
+        private ConsoleEnvironment(Random rand, bool verbose = false,
             MessageSensitivity sensitivity = MessageSensitivity.All, int conc = 0,
             TextWriter outWriter = null, TextWriter errWriter = null)
             : base(rand, verbose, conc, nameof(ConsoleEnvironment))
@@ -394,7 +399,7 @@ namespace Microsoft.ML.Runtime.Data
             return base.CreateTempFileCore(env, suffix, "TLC_" + prefix);
         }
 
-        protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+        protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
         {
             Contracts.AssertValue(rand);
             Contracts.AssertValueOrNull(parentFullName);
@@ -430,6 +435,11 @@ namespace Microsoft.ML.Runtime.Data
             return new OutputRedirector(this, newOutWriter, newErrWriter);
         }
 
+        internal void ResetProgressChannel()
+        {
+            ProgressTracker.Reset();
+        }
+
         private sealed class OutputRedirector : IDisposable
         {
             private readonly ConsoleEnvironment _root;
@@ -460,7 +470,7 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class Host : HostBase
         {
-            public Host(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+            public Host(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
                 : base(source, shortName, parentFullName, rand, verbose, conc)
             {
                 IsCancelled = source.IsCancelled;
@@ -482,7 +492,7 @@ namespace Microsoft.ML.Runtime.Data
                 return new Pipe<TMessage>(parent, name, GetDispatchDelegate<TMessage>());
             }
 
-            protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+            protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
             {
                 return new Host(source, shortName, parentFullName, rand, verbose, conc);
             }

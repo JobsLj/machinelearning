@@ -4,14 +4,16 @@
 
 using System.Collections.Generic;
 using System.IO;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Model;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// Utilities to rebind data transforms
     /// </summary>
-    public static class ApplyTransformUtils
+    [BestFriend]
+    internal static class ApplyTransformUtils
     {
         /// <summary>
         /// Attempt to apply the data transform to a different data view source.

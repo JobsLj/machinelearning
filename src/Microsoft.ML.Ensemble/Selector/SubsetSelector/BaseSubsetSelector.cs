@@ -4,13 +4,13 @@
 
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Ensemble.EntryPoints;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Transforms;
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.SubsetSelector
+namespace Microsoft.ML.Ensemble.Selector.SubsetSelector
 {
-    public abstract class BaseSubsetSelector<TArgs> : ISubsetSelector
+    internal abstract class BaseSubsetSelector<TArgs> : ISubsetSelector
         where TArgs : BaseSubsetSelector<TArgs>.ArgumentsBase
     {
         public abstract class ArgumentsBase
@@ -51,9 +51,9 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubsetSelector
             ValidationDatasetProportion = validationDatasetProportion;
         }
 
-        public abstract IEnumerable<Subset> GetSubsets(Batch batch, IRandom rand);
+        public abstract IEnumerable<Subset> GetSubsets(Batch batch, Random rand);
 
-        public IEnumerable<Batch> GetBatches(IRandom rand)
+        public IEnumerable<Batch> GetBatches(Random rand)
         {
             Host.Assert(Data != null, "Must call Initialize first!");
             Host.AssertValue(rand);
@@ -70,12 +70,12 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubsetSelector
                 {
                     // Split the data into train and test sets.
                     string name = Data.Data.Schema.GetTempColumnName();
-                    var args = new GenerateNumberTransform.Arguments();
-                    args.Column = new[] { new GenerateNumberTransform.Column() { Name = name } };
+                    var args = new GenerateNumberTransform.Options();
+                    args.Columns = new[] { new GenerateNumberTransform.Column() { Name = name } };
                     args.Seed = (uint)rand.Next();
                     var view = new GenerateNumberTransform(Host, args, Data.Data);
-                    var viewTest = new RangeFilter(Host, new RangeFilter.Arguments() { Column = name, Max = ValidationDatasetProportion }, view);
-                    var viewTrain = new RangeFilter(Host, new RangeFilter.Arguments() { Column = name, Max = ValidationDatasetProportion, Complement = true }, view);
+                    var viewTest = new RangeFilter(Host, new RangeFilter.Options() { Column = name, Max = ValidationDatasetProportion }, view);
+                    var viewTrain = new RangeFilter(Host, new RangeFilter.Options() { Column = name, Max = ValidationDatasetProportion, Complement = true }, view);
                     dataTest = new RoleMappedData(viewTest, Data.Schema.GetColumnRoleNames());
                     dataTrain = new RoleMappedData(viewTrain, Data.Schema.GetColumnRoleNames());
                 }

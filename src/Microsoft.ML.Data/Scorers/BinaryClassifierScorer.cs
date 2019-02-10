@@ -2,17 +2,16 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model.Onnx;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Model.Onnx;
+using Microsoft.ML.Model.Pfa;
 using Newtonsoft.Json.Linq;
-using Microsoft.ML.Runtime.Model.Pfa;
-using System.Collections.Generic;
+using Float = System.Single;
 
 [assembly: LoadableClass(typeof(BinaryClassifierScorer), typeof(BinaryClassifierScorer.Arguments), typeof(SignatureDataScorer),
     "Binary Classifier Scorer", "BinaryClassifierScorer", "BinaryClassifier", "Binary",
@@ -21,9 +20,10 @@ using System.Collections.Generic;
 [assembly: LoadableClass(typeof(BinaryClassifierScorer), null, typeof(SignatureLoadDataTransform),
     "Binary Classifier Scorer", BinaryClassifierScorer.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public sealed class BinaryClassifierScorer : PredictedLabelScorerBase, ITransformCanSaveOnnx
+    [BestFriend]
+    internal sealed class BinaryClassifierScorer : PredictedLabelScorerBase, ITransformCanSaveOnnx
     {
         public sealed class Arguments : ThresholdArgumentsBase
         {
@@ -65,7 +65,7 @@ namespace Microsoft.ML.Runtime.Data
 
             if (trainSchema?.Label == null)
                 return mapper; // We don't even have a label identified in a training schema.
-            var keyType = trainSchema.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.KeyValues, trainSchema.Label.Index);
+            var keyType = trainSchema.Label.Value.Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.KeyValues)?.Type as VectorType;
             if (keyType == null || !CanWrap(mapper, keyType))
                 return mapper;
 
@@ -94,14 +94,13 @@ namespace Microsoft.ML.Runtime.Data
             if (rowMapper == null)
                 return false; // We could cover this case, but it is of no practical worth as far as I see, so I decline to do so.
 
-            ISchema outSchema = mapper.Schema;
             int scoreIdx;
-            if (!outSchema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreIdx))
+            if (!mapper.OutputSchema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreIdx))
                 return false; // The mapper doesn't even publish a score column to attach the metadata to.
-            if (outSchema.GetMetadataTypeOrNull(MetadataUtils.Kinds.TrainingLabelValues, scoreIdx) != null)
+            if (mapper.OutputSchema[scoreIdx].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.TrainingLabelValues)?.Type != null)
                 return false; // The mapper publishes a score column, and already produces its own slot names.
 
-            return labelNameType.IsVector && labelNameType.VectorSize == 2;
+            return labelNameType is VectorType vectorType && vectorType.Size == 2;
         }
 
         private static ISchemaBoundMapper WrapCore<T>(IHostEnvironment env, ISchemaBoundMapper mapper, RoleMappedSchema trainSchema)
@@ -110,24 +109,22 @@ namespace Microsoft.ML.Runtime.Data
             env.AssertValue(mapper);
             env.AssertValue(trainSchema);
             env.Assert(mapper is ISchemaBoundRowMapper);
+            env.Assert(trainSchema.Label.HasValue);
+            var labelColumn = trainSchema.Label.Value;
 
             // Key values from the training schema label, will map to slot names of the score output.
-            var type = trainSchema.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.KeyValues, trainSchema.Label.Index);
+            var type = labelColumn.Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.KeyValues)?.Type as VectorType;
             env.AssertValue(type);
-            env.Assert(type.IsVector);
 
             // Wrap the fetching of the metadata as a simple getter.
-            ValueGetter<VBuffer<T>> getter =
-                (ref VBuffer<T> value) =>
-                {
-                    trainSchema.Schema.GetMetadata(MetadataUtils.Kinds.KeyValues,
-                        trainSchema.Label.Index, ref value);
-                };
+            ValueGetter<VBuffer<T>> getter = (ref VBuffer<T> value) =>
+                labelColumn.GetKeyValues(ref value);
 
-            return MultiClassClassifierScorer.LabelNameBindableMapper.CreateBound<T>(env, (ISchemaBoundRowMapper)mapper, type.AsVector, getter, MetadataUtils.Kinds.TrainingLabelValues, CanWrap);
+            return MultiClassClassifierScorer.LabelNameBindableMapper.CreateBound<T>(env, (ISchemaBoundRowMapper)mapper, type, getter, MetadataUtils.Kinds.TrainingLabelValues, CanWrap);
         }
 
-        public BinaryClassifierScorer(IHostEnvironment env, Arguments args, IDataView data, ISchemaBoundMapper mapper, RoleMappedSchema trainSchema)
+        [BestFriend]
+        internal BinaryClassifierScorer(IHostEnvironment env, Arguments args, IDataView data, ISchemaBoundMapper mapper, RoleMappedSchema trainSchema)
             : base(args, env, data, WrapIfNeeded(env, mapper, trainSchema), trainSchema, RegistrationName, MetadataUtils.Const.ScoreColumnKind.BinaryClassification,
                 Contracts.CheckRef(args, nameof(args)).ThresholdColumn, OutputTypeMatches, GetPredColType)
         {
@@ -170,7 +167,7 @@ namespace Microsoft.ML.Runtime.Data
             return h.Apply("Loading Model", ch => new BinaryClassifierScorer(h, ctx, input));
         }
 
-        protected override void SaveCore(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             Contracts.AssertValue(ctx);
             ctx.SetVersionInfo(GetVersionInfo());
@@ -185,7 +182,7 @@ namespace Microsoft.ML.Runtime.Data
             ctx.Writer.Write(_threshold);
         }
 
-        public override void SaveAsOnnx(OnnxContext ctx)
+        private protected override void SaveAsOnnxCore(OnnxContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             Host.Assert(Bindable is IBindableCanSaveOnnx);
@@ -193,7 +190,7 @@ namespace Microsoft.ML.Runtime.Data
             if (!ctx.ContainsColumn(DefaultColumnNames.Features))
                 return;
 
-            base.SaveAsOnnx(ctx);
+            base.SaveAsOnnxCore(ctx);
             int delta = Bindings.DerivedColumnCount;
 
             Host.Assert(delta == 1);
@@ -213,7 +210,7 @@ namespace Microsoft.ML.Runtime.Data
             }
         }
 
-        public override IDataTransform ApplyToData(IHostEnvironment env, IDataView newSource)
+        private protected override IDataTransform ApplyToDataCore(IHostEnvironment env, IDataView newSource)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(newSource, nameof(newSource));
@@ -221,10 +218,10 @@ namespace Microsoft.ML.Runtime.Data
             return new BinaryClassifierScorer(env, this, newSource);
         }
 
-        protected override Delegate GetPredictedLabelGetter(IRow output, out Delegate scoreGetter)
+        protected override Delegate GetPredictedLabelGetter(Row output, out Delegate scoreGetter)
         {
             Host.AssertValue(output);
-            Host.Assert(output.Schema == Bindings.RowMapper.Schema);
+            Host.Assert(output.Schema == Bindings.RowMapper.OutputSchema);
             Host.Assert(output.IsColumnActive(Bindings.ScoreColumnIndex));
 
             ValueGetter<Float> mapperScoreGetter = output.GetGetter<Float>(Bindings.ScoreColumnIndex);
@@ -240,7 +237,7 @@ namespace Microsoft.ML.Runtime.Data
                 };
             scoreGetter = scoreFn;
 
-            if (Bindings.PredColType.IsKey)
+            if (Bindings.PredColType is KeyType)
             {
                 ValueGetter<uint> predFnAsKey =
                     (ref uint dst) =>
@@ -271,7 +268,7 @@ namespace Microsoft.ML.Runtime.Data
             value = (uint)(score > _threshold ? 2 : score <= _threshold ? 1 : 0);
         }
 
-        protected override JToken PredictedLabelPfa(string[] mapperOutputs)
+        private protected override JToken PredictedLabelPfa(string[] mapperOutputs)
         {
             Contracts.CheckParam(Utils.Size(mapperOutputs) >= 1, nameof(mapperOutputs));
 
@@ -280,7 +277,7 @@ namespace Microsoft.ML.Runtime.Data
             JToken falseVal = 0;
             JToken nullVal = -1;
 
-            if (!Bindings.PredColType.IsKey)
+            if (!(Bindings.PredColType is KeyType))
             {
                 trueVal = true;
                 falseVal = nullVal = false; // Let's pretend those pesky nulls are not there.
@@ -294,7 +291,7 @@ namespace Microsoft.ML.Runtime.Data
             var labelNameBindableMapper = mapper.Bindable as MultiClassClassifierScorer.LabelNameBindableMapper;
             if (labelNameBindableMapper == null)
                 return BoolType.Instance;
-            return new KeyType(DataKind.U4, 0, labelNameBindableMapper.Type.VectorSize);
+            return new KeyType(typeof(uint), labelNameBindableMapper.Type.Size);
         }
 
         private static bool OutputTypeMatches(ColumnType scoreType)

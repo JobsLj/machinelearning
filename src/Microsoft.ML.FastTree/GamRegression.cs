@@ -2,33 +2,32 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.FastTree;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
-using System;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Model;
+using Microsoft.ML.Trainers.FastTree;
+using Microsoft.ML.Training;
 
 [assembly: LoadableClass(RegressionGamTrainer.Summary,
-    typeof(RegressionGamTrainer), typeof(RegressionGamTrainer.Arguments),
+    typeof(RegressionGamTrainer), typeof(RegressionGamTrainer.Options),
     new[] { typeof(SignatureRegressorTrainer), typeof(SignatureTrainer), typeof(SignatureFeatureScorerTrainer) },
     RegressionGamTrainer.UserNameValue,
     RegressionGamTrainer.LoadNameValue,
     RegressionGamTrainer.ShortName, DocName = "trainer/GAM.md")]
 
-[assembly: LoadableClass(typeof(RegressionGamPredictor), null, typeof(SignatureLoadModel),
+[assembly: LoadableClass(typeof(RegressionGamModelParameters), null, typeof(SignatureLoadModel),
     "GAM Regression Predictor",
-    RegressionGamPredictor.LoaderSignature)]
+    RegressionGamModelParameters.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public sealed class RegressionGamTrainer : GamTrainerBase<RegressionGamTrainer.Arguments, RegressionPredictionTransformer<RegressionGamPredictor>, RegressionGamPredictor>
+    public sealed class RegressionGamTrainer : GamTrainerBase<RegressionGamTrainer.Options, RegressionPredictionTransformer<RegressionGamModelParameters>, RegressionGamModelParameters>
     {
-        public partial class Arguments : ArgumentsBase
+        public partial class Options : ArgumentsBase
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "Metric for pruning. (For regression, 1: L1, 2:L2; default L2)", ShortName = "pmetric")]
             [TGUI(Description = "Metric for pruning. (For regression, 1: L1, 2:L2; default L2")]
@@ -41,8 +40,8 @@ namespace Microsoft.ML.Runtime.FastTree
 
         public override PredictionKind PredictionKind => PredictionKind.Regression;
 
-        internal RegressionGamTrainer(IHostEnvironment env, Arguments args)
-             : base(env, args, LoadNameValue, TrainerUtils.MakeR4ScalarLabel(args.LabelColumn)) { }
+        internal RegressionGamTrainer(IHostEnvironment env, Options options)
+             : base(env, options, LoadNameValue, TrainerUtils.MakeR4ScalarColumn(options.LabelColumn)) { }
 
         /// <summary>
         /// Initializes a new instance of <see cref="FastTreeBinaryClassificationTrainer"/>
@@ -51,23 +50,29 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <param name="labelColumn">The name of the label column.</param>
         /// <param name="featureColumn">The name of the feature column.</param>
         /// <param name="weightColumn">The name for the column containing the initial weight.</param>
-        /// <param name="advancedSettings">A delegate to apply all the advanced arguments to the algorithm.</param>
-        public RegressionGamTrainer(IHostEnvironment env, string labelColumn, string featureColumn, string weightColumn = null, Action<Arguments> advancedSettings = null)
-            : base(env, LoadNameValue, TrainerUtils.MakeR4ScalarLabel(labelColumn), featureColumn, weightColumn, advancedSettings)
+        /// <param name="numIterations">The number of iterations to use in learning the features.</param>
+        /// <param name="learningRate">The learning rate. GAMs work best with a small learning rate.</param>
+        /// <param name="maxBins">The maximum number of bins to use to approximate features</param>
+        internal RegressionGamTrainer(IHostEnvironment env,
+            string labelColumn = DefaultColumnNames.Label,
+            string featureColumn = DefaultColumnNames.Features,
+            string weightColumn = null,
+            int numIterations = GamDefaults.NumIterations,
+            double learningRate = GamDefaults.LearningRates,
+            int maxBins = GamDefaults.MaxBins)
+            : base(env, LoadNameValue, TrainerUtils.MakeR4ScalarColumn(labelColumn), featureColumn, weightColumn, numIterations, learningRate, maxBins)
         {
-            Host.CheckNonEmpty(labelColumn, nameof(labelColumn));
-            Host.CheckNonEmpty(featureColumn, nameof(featureColumn));
         }
 
-        internal override void CheckLabel(RoleMappedData data)
+        private protected override void CheckLabel(RoleMappedData data)
         {
             data.CheckRegressionLabel();
         }
 
-        protected override RegressionGamPredictor TrainModelCore(TrainContext context)
+        private protected override RegressionGamModelParameters TrainModelCore(TrainContext context)
         {
             TrainBase(context);
-            return new RegressionGamPredictor(Host, InputLength, TrainSet, MeanEffect, BinEffects, FeatureMap);
+            return new RegressionGamModelParameters(Host, BinUpperBounds, BinEffects, MeanEffect, InputLength, FeatureMap);
         }
 
         protected override ObjectiveFunctionBase CreateObjectiveFunction()
@@ -83,8 +88,11 @@ namespace Microsoft.ML.Runtime.FastTree
             PruningTest = new TestHistory(validTest, PruningLossIndex);
         }
 
-        protected override RegressionPredictionTransformer<RegressionGamPredictor> MakeTransformer(RegressionGamPredictor model, Schema trainSchema)
-            => new RegressionPredictionTransformer<RegressionGamPredictor>(Host, model, trainSchema, FeatureColumn.Name);
+        protected override RegressionPredictionTransformer<RegressionGamModelParameters> MakeTransformer(RegressionGamModelParameters model, Schema trainSchema)
+            => new RegressionPredictionTransformer<RegressionGamModelParameters>(Host, model, trainSchema, FeatureColumn.Name);
+
+        public RegressionPredictionTransformer<RegressionGamModelParameters> Train(IDataView trainData, IDataView validationData = null)
+            => TrainTransformer(trainData, validationData);
 
         protected override SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema)
         {
@@ -95,44 +103,61 @@ namespace Microsoft.ML.Runtime.FastTree
         }
     }
 
-    public class RegressionGamPredictor : GamPredictorBase
+    /// <summary>
+    /// The model parameters class for Binary Classification GAMs
+    /// </summary>
+    public sealed class RegressionGamModelParameters : GamModelParametersBase
     {
-        public const string LoaderSignature = "RegressionGamPredictor";
+        internal const string LoaderSignature = "RegressionGamPredictor";
         public override PredictionKind PredictionKind => PredictionKind.Regression;
 
-        public RegressionGamPredictor(IHostEnvironment env, int inputLength, Dataset trainset,
-            double meanEffect, double[][] binEffects, int[] featureMap)
-            : base(env, LoaderSignature, inputLength, trainset, meanEffect, binEffects, featureMap) { }
+        /// <summary>
+        /// Construct a new Regression GAM with the defined properties.
+        /// </summary>
+        /// <param name="env">The Host Environment</param>
+        /// <param name="binUpperBounds">An array of arrays of bin-upper-bounds for each feature.</param>
+        /// <param name="binEffects">Anay array of arrays of effect sizes for each bin for each feature.</param>
+        /// <param name="intercept">The intercept term for the model. Also referred to as the bias or the mean effect.</param>
+        /// <param name="inputLength">The number of features passed from the dataset. Used when the number of input features is
+        /// different than the number of shape functions. Use default if all features have a shape function.</param>
+        /// <param name="featureToInputMap">A map from the feature shape functions (as described by the binUpperBounds and BinEffects)
+        /// to the input feature. Used when the number of input features is different than the number of shape functions. Use default if all features have
+        /// a shape function.</param>
+        public RegressionGamModelParameters(IHostEnvironment env,
+            double[][] binUpperBounds, double[][] binEffects, double intercept, int inputLength = -1, int[] featureToInputMap = null)
+            : base(env, LoaderSignature, binUpperBounds, binEffects, intercept, inputLength, featureToInputMap) { }
 
-        private RegressionGamPredictor(IHostEnvironment env, ModelLoadContext ctx)
+        private RegressionGamModelParameters(IHostEnvironment env, ModelLoadContext ctx)
             : base(env, LoaderSignature, ctx) { }
 
-        public static VersionInfo GetVersionInfo()
+        private static VersionInfo GetVersionInfo()
         {
             return new VersionInfo(
                 modelSignature: "GAM REGP",
-                verWrittenCur: 0x00010001,
-                verReadableCur: 0x00010001,
+                // verWrittenCur: 0x00010001, // Initial
+                // verWrittenCur: 0x00010001, // Added Intercept but collided from release 0.6-0.9
+                verWrittenCur: 0x00010002,    // Added Intercept (version revved to address collisions)
+                verReadableCur: 0x00010002,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(RegressionGamPredictor).Assembly.FullName);
+                loaderAssemblyName: typeof(RegressionGamModelParameters).Assembly.FullName);
         }
 
-        public static RegressionGamPredictor Create(IHostEnvironment env, ModelLoadContext ctx)
+        private static RegressionGamModelParameters Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
 
-            return new RegressionGamPredictor(env, ctx);
+            return new RegressionGamModelParameters(env, ctx);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveCore(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
             ctx.SetVersionInfo(GetVersionInfo());
-            base.Save(ctx);
+            base.SaveCore(ctx);
         }
     }
 }

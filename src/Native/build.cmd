@@ -19,8 +19,10 @@ set MKL_LIB_PATH=""
 if [%1] == [] goto :ToolsVersion
 if /i [%1] == [Release]     ( set CMAKE_BUILD_TYPE=Release&&shift&goto Arg_Loop)
 if /i [%1] == [Release-Intrinsics]     ( set CMAKE_BUILD_TYPE=Release-Intrinsics&&shift&goto Arg_Loop)
+if /i [%1] == [Release-netfx]     ( set CMAKE_BUILD_TYPE=Release-netfx&&shift&goto Arg_Loop)
 if /i [%1] == [Debug]       ( set CMAKE_BUILD_TYPE=Debug&&shift&goto Arg_Loop)
 if /i [%1] == [Debug-Intrinsics]       ( set CMAKE_BUILD_TYPE=Debug-Intrinsics&&shift&goto Arg_Loop)
+if /i [%1] == [Debug-netfx]       ( set CMAKE_BUILD_TYPE=Debug-netfx&&shift&goto Arg_Loop)
 
 if /i [%1] == [x86]         ( set __BuildArch=x86&&set __VCBuildArch=x86&&shift&goto Arg_Loop)
 if /i [%1] == [x64]         ( set __BuildArch=x64&&set __VCBuildArch=x86_amd64&&shift&goto Arg_Loop)
@@ -45,17 +47,29 @@ set "VSCMD_START_DIR=%__currentScriptDir%"
 call "%_VSCOMNTOOLS%\VsDevCmd.bat"
 
 :RunVCVars
-if "%VisualStudioVersion%"=="15.0" (
+if "%VisualStudioVersion%"=="16.0" (
+    goto :VS2019
+) else if "%VisualStudioVersion%"=="15.0" (
     goto :VS2017
 ) else if "%VisualStudioVersion%"=="14.0" (
     goto :VS2015
 )
 
 :MissingVersion
-:: Can't find VS 2015 or 2017
-echo Error: Visual Studio 2015 or 2017 required
+:: Can't find VS 2015, 2017 or 2019
+echo Error: Visual Studio 2015, 2017 or 2019 required
 echo        Please see https://github.com/dotnet/machinelearning/tree/master/Documentation for build instructions.
 exit /b 1
+
+:VS2019
+:: Setup vars for VS2019
+set __PlatformToolset=v142
+set __VSVersion=15 2017
+if NOT "%__BuildArch%" == "arm64" (
+    :: Set the environment for the native build
+    call "%VS160COMNTOOLS%..\..\VC\Auxiliary\Build\vcvarsall.bat" %__VCBuildArch%
+)
+goto :SetupDirs
 
 :VS2017
 :: Setup vars for VS2017
@@ -93,6 +107,11 @@ set "__IntermediatesDir=%__IntermediatesDir:\=/%"
 :: Strip the "-Intrinsics" suffix from the build type
 if [%CMAKE_BUILD_TYPE:~-11%] == [-Intrinsics] (
 	set CMAKE_BUILD_TYPE=%CMAKE_BUILD_TYPE:~0,-11%
+)
+
+:: Strip the "-netfx" suffix from the build type
+if [%CMAKE_BUILD_TYPE:~-6%] == [-netfx] (
+	set CMAKE_BUILD_TYPE=%CMAKE_BUILD_TYPE:~0,-6%
 )
 
 :: Check that the intermediate directory exists so we can place our cmake build tree there

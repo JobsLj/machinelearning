@@ -3,16 +3,19 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.ComponentModel.Composition.Hosting;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using Stopwatch = System.Diagnostics.Stopwatch;
 
     /// <summary>
     /// An ML.NET environment for local execution.
     /// </summary>
-    public sealed class LocalEnvironment : HostEnvironmentBase<LocalEnvironment>
+    internal sealed class LocalEnvironment : HostEnvironmentBase<LocalEnvironment>
     {
+        private readonly Func<CompositionContainer> _compositionContainerFactory;
+
         private sealed class Channel : ChannelBase
         {
             public readonly Stopwatch Watch;
@@ -25,15 +28,19 @@ namespace Microsoft.ML.Runtime.Data
             }
 
             private void ChannelFinished()
-                => Dispatch(this, new ChannelMessage(ChannelMessageKind.Trace, MessageSensitivity.None, "Channel finished. Elapsed { 0:c }.", Watch.Elapsed));
+                => Dispatch(this, new ChannelMessage(ChannelMessageKind.Trace, MessageSensitivity.None, "Channel finished. Elapsed {0:c}.", Watch.Elapsed));
 
-            protected override void DisposeCore()
+            protected override void Dispose(bool disposing)
             {
-                ChannelFinished();
-                Watch.Stop();
+                if(disposing)
+                {
+                    ChannelFinished();
+                    Watch.Stop();
 
-                Dispatch(this, new ChannelMessage(ChannelMessageKind.Trace, MessageSensitivity.None, "Channel disposed"));
-                base.DisposeCore();
+                    Dispatch(this, new ChannelMessage(ChannelMessageKind.Trace, MessageSensitivity.None, "Channel disposed"));
+                }
+
+                base.Dispose(disposing);
             }
         }
 
@@ -42,9 +49,11 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         /// <param name="seed">Random seed. Set to <c>null</c> for a non-deterministic environment.</param>
         /// <param name="conc">Concurrency level. Set to 1 to run single-threaded. Set to 0 to pick automatically.</param>
-        public LocalEnvironment(int? seed = null, int conc = 0)
+        /// <param name="compositionContainerFactory">The function to retrieve the composition container</param>
+        public LocalEnvironment(int? seed = null, int conc = 0, Func<CompositionContainer> compositionContainerFactory = null)
             : base(RandomUtils.Create(seed), verbose: false, conc)
         {
+            _compositionContainerFactory = compositionContainerFactory;
         }
 
         /// <summary>
@@ -62,7 +71,7 @@ namespace Microsoft.ML.Runtime.Data
         protected override IFileHandle CreateTempFileCore(IHostEnvironment env, string suffix = null, string prefix = null)
             => base.CreateTempFileCore(env, suffix, "Local_" + prefix);
 
-        protected override IHost RegisterCore(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+        protected override IHost RegisterCore(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
         {
             Contracts.AssertValue(rand);
             Contracts.AssertValueOrNull(parentFullName);
@@ -87,9 +96,16 @@ namespace Microsoft.ML.Runtime.Data
             return new Pipe<TMessage>(parent, name, GetDispatchDelegate<TMessage>());
         }
 
+        public override CompositionContainer GetCompositionContainer()
+        {
+            if (_compositionContainerFactory != null)
+                return _compositionContainerFactory();
+            return base.GetCompositionContainer();
+        }
+
         private sealed class Host : HostBase
         {
-            public Host(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+            public Host(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
                 : base(source, shortName, parentFullName, rand, verbose, conc)
             {
                 IsCancelled = source.IsCancelled;
@@ -111,7 +127,7 @@ namespace Microsoft.ML.Runtime.Data
                 return new Pipe<TMessage>(parent, name, GetDispatchDelegate<TMessage>());
             }
 
-            protected override IHost RegisterCore(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+            protected override IHost RegisterCore(HostEnvironmentBase<LocalEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose, int? conc)
             {
                 return new Host(source, shortName, parentFullName, rand, verbose, conc);
             }

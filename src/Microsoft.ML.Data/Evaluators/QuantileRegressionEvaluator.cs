@@ -2,16 +2,16 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Float = System.Single;
 
 [assembly: LoadableClass(typeof(QuantileRegressionEvaluator), typeof(QuantileRegressionEvaluator), typeof(QuantileRegressionEvaluator.Arguments), typeof(SignatureEvaluator),
     "Quantile Regression Evaluator", QuantileRegressionEvaluator.LoadName, "QuantileRegression")]
@@ -23,9 +23,10 @@ using Microsoft.ML.Runtime.Model;
 [assembly: LoadableClass(typeof(QuantileRegressionPerInstanceEvaluator), null, typeof(SignatureLoadRowMapper),
     "", QuantileRegressionPerInstanceEvaluator.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public sealed class QuantileRegressionEvaluator :
+    [BestFriend]
+    internal sealed class QuantileRegressionEvaluator :
         RegressionEvaluatorBase<QuantileRegressionEvaluator.Aggregator, VBuffer<Float>, VBuffer<Double>>
     {
         public sealed class Arguments : ArgumentsBase
@@ -39,45 +40,42 @@ namespace Microsoft.ML.Runtime.Data
         {
         }
 
-        protected override IRowMapper CreatePerInstanceRowMapper(RoleMappedSchema schema)
+        private protected override IRowMapper CreatePerInstanceRowMapper(RoleMappedSchema schema)
         {
-            Host.CheckParam(schema.Label != null, nameof(schema), "Schema must contain a label column");
+            Host.CheckParam(schema.Label.HasValue, nameof(schema), "Must contain a label column");
             var scoreInfo = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
-            int scoreSize = scoreInfo.Type.VectorSize;
-            var type = schema.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, scoreInfo.Index);
-            Host.Check(type != null && type.IsKnownSizeVector && type.ItemType.IsText, "Quantile regression score column must have slot names");
+            int scoreSize = scoreInfo.Type.GetVectorSize();
+            var type = schema.Schema[scoreInfo.Index].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.SlotNames)?.Type as VectorType;
+            Host.Check(type != null && type.IsKnownSize && type.ItemType is TextType, "Quantile regression score column must have slot names");
             var quantiles = default(VBuffer<ReadOnlyMemory<char>>);
-            schema.Schema.GetMetadata(MetadataUtils.Kinds.SlotNames, scoreInfo.Index, ref quantiles);
+            schema.Schema[scoreInfo.Index].Metadata.GetValue(MetadataUtils.Kinds.SlotNames, ref quantiles);
             Host.Assert(quantiles.IsDense && quantiles.Length == scoreSize);
 
-            return new QuantileRegressionPerInstanceEvaluator(Host, schema.Schema, scoreInfo.Name, schema.Label.Name, scoreSize, quantiles.Values);
+            return new QuantileRegressionPerInstanceEvaluator(Host, schema.Schema, scoreInfo.Name, schema.Label.Value.Name, scoreSize, quantiles);
         }
 
-        protected override void CheckScoreAndLabelTypes(RoleMappedSchema schema)
+        private protected override void CheckScoreAndLabelTypes(RoleMappedSchema schema)
         {
             var score = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
-            var t = score.Type;
-            if (t.VectorSize == 0 || (t.ItemType != NumberType.R4 && t.ItemType != NumberType.R8))
-            {
-                throw Host.Except(
-                    "Score column '{0}' has type '{1}' but must be a known length vector of type R4 or R8", score.Name, t);
-            }
-            Host.Check(schema.Label != null, "Could not find the label column");
-            t = schema.Label.Type;
-            if (t != NumberType.R4)
-                throw Host.Except("Label column '{0}' has type '{1}' but must be R4", schema.Label.Name, t);
+            var t = score.Type as VectorType;
+            if (t == null || t.Size == 0 || (t.ItemType != NumberType.R4 && t.ItemType != NumberType.R8))
+                throw Host.ExceptSchemaMismatch(nameof(schema), "score", score.Name, "vector of float or double", t.ToString());
+            Host.CheckParam(schema.Label.HasValue, nameof(schema), "Must contain a label column");
+            var labelType = schema.Label.Value.Type;
+            if (labelType != NumberType.R4)
+                throw Host.ExceptSchemaMismatch(nameof(schema), "label", schema.Label.Value.Name, "float", t.ToString());
         }
 
-        protected override Aggregator GetAggregatorCore(RoleMappedSchema schema, string stratName)
+        private protected override Aggregator GetAggregatorCore(RoleMappedSchema schema, string stratName)
         {
             var scoreInfo = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
-            var t = scoreInfo.Type;
-            Host.Assert(t.VectorSize > 0 && (t.ItemType == NumberType.R4 || t.ItemType == NumberType.R8));
+            var scoreType = scoreInfo.Type as VectorType;
+            Host.Assert(scoreType != null && scoreType.Size > 0 && (scoreType.ItemType == NumberType.R4 || scoreType.ItemType == NumberType.R8));
             var slotNames = default(VBuffer<ReadOnlyMemory<char>>);
-            t = schema.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, scoreInfo.Index);
-            if (t != null && t.VectorSize == scoreInfo.Type.VectorSize && t.ItemType.IsText)
-                schema.Schema.GetMetadata(MetadataUtils.Kinds.SlotNames, scoreInfo.Index, ref slotNames);
-            return new Aggregator(Host, LossFunction, schema.Weight != null, scoreInfo.Type.VectorSize, ref slotNames, stratName);
+            var slotNamesType = schema.Schema[scoreInfo.Index].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.SlotNames)?.Type as VectorType;
+            if (slotNamesType != null && slotNamesType.Size == scoreType.Size && slotNamesType.ItemType is TextType)
+                schema.Schema[scoreInfo.Index].GetSlotNames(ref slotNames);
+            return new Aggregator(Host, LossFunction, schema.Weight != null, scoreType.Size, in slotNames, stratName);
         }
 
         public override IEnumerable<MetricColumn> GetOverallMetricColumns()
@@ -132,68 +130,76 @@ namespace Microsoft.ML.Runtime.Data
                     TotalLoss = VBufferUtils.CreateDense<Double>(size);
                 }
 
-                protected override void UpdateCore(Float label, ref VBuffer<Float> score, ref VBuffer<Double> loss, Float weight)
+                protected override void UpdateCore(Float label, in VBuffer<Float> score, in VBuffer<Double> loss, Float weight)
                 {
-                    AddL1AndL2Loss(label, ref score, weight);
-                    AddCustomLoss(weight, ref loss);
+                    AddL1AndL2Loss(label, in score, weight);
+                    AddCustomLoss(weight, in loss);
                 }
 
-                private void AddL1AndL2Loss(Float label, ref VBuffer<Float> score, Float weight)
+                private void AddL1AndL2Loss(Float label, in VBuffer<Float> score, Float weight)
                 {
                     Contracts.Check(score.Length == TotalL1Loss.Length, "Vectors must have the same dimensionality.");
 
+                    var totalL1LossEditor = VBufferEditor.CreateFromBuffer(ref TotalL1Loss);
+                    var totalL2LossEditor = VBufferEditor.CreateFromBuffer(ref TotalL2Loss);
+
+                    var scoreValues = score.GetValues();
                     if (score.IsDense)
                     {
                         // Both are dense.
-                        for (int i = 0; i < score.Length; i++)
+                        for (int i = 0; i < scoreValues.Length; i++)
                         {
-                            var diff = Math.Abs((Double)label - score.Values[i]);
+                            var diff = Math.Abs((Double)label - scoreValues[i]);
                             var weightedDiff = diff * weight;
-                            TotalL1Loss.Values[i] += weightedDiff;
-                            TotalL2Loss.Values[i] += diff * weightedDiff;
+                            totalL1LossEditor.Values[i] += weightedDiff;
+                            totalL2LossEditor.Values[i] += diff * weightedDiff;
                         }
                         return;
                     }
 
                     // score is sparse, and _totalL1Loss is dense.
-                    for (int i = 0; i < score.Count; i++)
+                    var scoreIndices = score.GetIndices();
+                    for (int i = 0; i < scoreValues.Length; i++)
                     {
-                        var diff = Math.Abs((Double)label - score.Values[i]);
+                        var diff = Math.Abs((Double)label - scoreValues[i]);
                         var weightedDiff = diff * weight;
-                        TotalL1Loss.Values[score.Indices[i]] += weightedDiff;
-                        TotalL2Loss.Values[score.Indices[i]] += diff * weightedDiff;
+                        totalL1LossEditor.Values[scoreIndices[i]] += weightedDiff;
+                        totalL2LossEditor.Values[scoreIndices[i]] += diff * weightedDiff;
                     }
                 }
 
-                private void AddCustomLoss(Float weight, ref VBuffer<Double> loss)
+                private void AddCustomLoss(Float weight, in VBuffer<Double> loss)
                 {
                     Contracts.Check(loss.Length == TotalL1Loss.Length, "Vectors must have the same dimensionality.");
 
+                    var totalLossEditor = VBufferEditor.CreateFromBuffer(ref TotalLoss);
+
+                    var lossValues = loss.GetValues();
                     if (loss.IsDense)
                     {
                         // Both are dense.
-                        for (int i = 0; i < loss.Length; i++)
-                            TotalLoss.Values[i] += loss.Values[i] * weight;
+                        for (int i = 0; i < lossValues.Length; i++)
+                            totalLossEditor.Values[i] += lossValues[i] * weight;
                         return;
                     }
 
                     // loss is sparse, and _totalL1Loss is dense.
-                    for (int i = 0; i < loss.Count; i++)
-                        TotalLoss.Values[loss.Indices[i]] += loss.Values[i] * weight;
+                    var lossIndices = loss.GetIndices();
+                    for (int i = 0; i < lossValues.Length; i++)
+                        totalLossEditor.Values[lossIndices[i]] += lossValues[i] * weight;
                 }
 
-                protected override void Normalize(ref VBuffer<Double> src, ref VBuffer<Double> dst)
+                protected override void Normalize(in VBuffer<Double> src, ref VBuffer<Double> dst)
                 {
                     Contracts.Assert(SumWeights > 0);
                     Contracts.Assert(src.IsDense);
 
-                    var values = dst.Values;
-                    if (Utils.Size(values) < src.Length)
-                        values = new Double[src.Length];
+                    var editor = VBufferEditor.Create(ref dst, src.Length);
                     var inv = 1 / SumWeights;
-                    for (int i = 0; i < src.Length; i++)
-                        values[i] = src.Values[i] * inv;
-                    dst = new VBuffer<Double>(src.Length, values);
+                    var srcValues = src.GetValues();
+                    for (int i = 0; i < srcValues.Length; i++)
+                        editor.Values[i] = srcValues[i] * inv;
+                    dst = editor.Commit();
                 }
 
                 protected override VBuffer<Double> Zero()
@@ -212,7 +218,7 @@ namespace Microsoft.ML.Runtime.Data
             public override CountersBase WeightedCounters { get { return _weightedCounters; } }
 
             public Aggregator(IHostEnvironment env, IRegressionLoss lossFunction, bool weighted, int size,
-                ref VBuffer<ReadOnlyMemory<char>> slotNames, string stratName)
+                in VBuffer<ReadOnlyMemory<char>> slotNames, string stratName)
                 : base(env, lossFunction, weighted, stratName)
             {
                 Host.Assert(size > 0);
@@ -225,16 +231,16 @@ namespace Microsoft.ML.Runtime.Data
                 _slotNames = slotNames;
             }
 
-            protected override void ApplyLossFunction(ref VBuffer<float> score, float label, ref VBuffer<Double> loss)
+            protected override void ApplyLossFunction(in VBuffer<float> score, float label, ref VBuffer<Double> loss)
             {
                 VBufferUtils.PairManipulator<Float, Double> lossFn =
                     (int slot, Float src, ref Double dst) => dst = LossFunction.Loss(src, label);
-                VBufferUtils.ApplyWith(ref score, ref loss, lossFn);
+                VBufferUtils.ApplyWith(in score, ref loss, lossFn);
             }
 
-            protected override bool IsNaN(ref VBuffer<Float> score)
+            protected override bool IsNaN(in VBuffer<Float> score)
             {
-                return VBufferUtils.HasNaNs(ref score);
+                return VBufferUtils.HasNaNs(in score);
             }
 
             public override void AddColumn(ArrayDataViewBuilder dvBldr, string metricName, params VBuffer<Double>[] metric)
@@ -252,7 +258,7 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public sealed class QuantileRegressionPerInstanceEvaluator : PerInstanceEvaluatorBase
+    internal sealed class QuantileRegressionPerInstanceEvaluator : PerInstanceEvaluatorBase
     {
         public const string LoaderSignature = "QuantileRegPerInstance";
         private static VersionInfo GetVersionInfo()
@@ -273,22 +279,24 @@ namespace Microsoft.ML.Runtime.Data
         public const string L2 = "L2-loss";
 
         private readonly int _scoreSize;
-        private readonly ReadOnlyMemory<char>[] _quantiles;
+        private readonly VBuffer<ReadOnlyMemory<char>> _quantiles;
         private readonly ColumnType _outputType;
 
-        public QuantileRegressionPerInstanceEvaluator(IHostEnvironment env, ISchema schema, string scoreCol, string labelCol, int scoreSize, ReadOnlyMemory<char>[] quantiles)
+        public QuantileRegressionPerInstanceEvaluator(IHostEnvironment env, Schema schema, string scoreCol, string labelCol, int scoreSize, VBuffer<ReadOnlyMemory<char>> quantiles)
             : base(env, schema, scoreCol, labelCol)
         {
             Host.CheckParam(scoreSize > 0, nameof(scoreSize), "must be greater than 0");
-            if (Utils.Size(quantiles) != scoreSize)
-                throw Host.ExceptParam(nameof(quantiles), "array must be of length '{0}'", scoreSize);
+            if (!quantiles.IsDense)
+                throw Host.ExceptParam(nameof(quantiles), "buffer must be dense");
+            if (quantiles.Length != scoreSize)
+                throw Host.ExceptParam(nameof(quantiles), "buffer must be of length '{0}'", scoreSize);
             CheckInputColumnTypes(schema);
             _scoreSize = scoreSize;
             _quantiles = quantiles;
             _outputType = new VectorType(NumberType.R8, _scoreSize);
         }
 
-        private QuantileRegressionPerInstanceEvaluator(IHostEnvironment env, ModelLoadContext ctx, ISchema schema)
+        private QuantileRegressionPerInstanceEvaluator(IHostEnvironment env, ModelLoadContext ctx, Schema schema)
             : base(env, ctx, schema)
         {
             CheckInputColumnTypes(schema);
@@ -300,13 +308,14 @@ namespace Microsoft.ML.Runtime.Data
 
             _scoreSize = ctx.Reader.ReadInt32();
             Host.CheckDecode(_scoreSize > 0);
-            _quantiles = new ReadOnlyMemory<char>[_scoreSize];
+            ReadOnlyMemory<char>[] quantiles = new ReadOnlyMemory<char>[_scoreSize];
             for (int i = 0; i < _scoreSize; i++)
-                _quantiles[i] = ctx.LoadNonEmptyString().AsMemory();
+                quantiles[i] = ctx.LoadNonEmptyString().AsMemory();
+            _quantiles = new VBuffer<ReadOnlyMemory<char>>(quantiles.Length, quantiles);
             _outputType = new VectorType(NumberType.R8, _scoreSize);
         }
 
-        public static QuantileRegressionPerInstanceEvaluator Create(IHostEnvironment env, ModelLoadContext ctx, ISchema schema)
+        public static QuantileRegressionPerInstanceEvaluator Create(IHostEnvironment env, ModelLoadContext ctx, Schema schema)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
@@ -315,7 +324,7 @@ namespace Microsoft.ML.Runtime.Data
             return new QuantileRegressionPerInstanceEvaluator(env, ctx, schema);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -326,32 +335,33 @@ namespace Microsoft.ML.Runtime.Data
             // int: _scoreSize
             // int[]: Ids of the quantile names
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             Host.Assert(_scoreSize > 0);
             ctx.Writer.Write(_scoreSize);
+            var quantiles = _quantiles.GetValues();
             for (int i = 0; i < _scoreSize; i++)
-                ctx.SaveNonEmptyString(_quantiles[i].ToString());
+                ctx.SaveNonEmptyString(quantiles[i].ToString());
         }
 
-        public override Func<int, bool> GetDependencies(Func<int, bool> activeOutput)
+        private protected override Func<int, bool> GetDependenciesCore(Func<int, bool> activeOutput)
         {
             return
                 col => (activeOutput(L1Col) || activeOutput(L2Col)) && (col == ScoreIndex || col == LabelIndex);
         }
 
-        public override Schema.Column[] GetOutputColumns()
+        private protected override Schema.DetachedColumn[] GetOutputColumnsCore()
         {
-            var infos = new Schema.Column[2];
+            var infos = new Schema.DetachedColumn[2];
 
             var slotNamesType = new VectorType(TextType.Instance, _scoreSize);
-            var l1Metadata = new Schema.Metadata.Builder();
+            var l1Metadata = new MetadataBuilder();
             l1Metadata.AddSlotNames(_scoreSize, CreateSlotNamesGetter(L1));
 
-            var l2Metadata = new Schema.Metadata.Builder();
+            var l2Metadata = new MetadataBuilder();
             l2Metadata.AddSlotNames(_scoreSize, CreateSlotNamesGetter(L2));
 
-            infos[L1Col] = new Schema.Column(L1, _outputType, l1Metadata.GetMetadata());
-            infos[L2Col] = new Schema.Column(L2, _outputType, l2Metadata.GetMetadata());
+            infos[L1Col] = new Schema.DetachedColumn(L1, _outputType, l1Metadata.GetMetadata());
+            infos[L2Col] = new Schema.DetachedColumn(L2, _outputType, l2Metadata.GetMetadata());
             return infos;
         }
 
@@ -360,16 +370,15 @@ namespace Microsoft.ML.Runtime.Data
             return
                 (ref VBuffer<ReadOnlyMemory<char>> dst) =>
                 {
-                    var values = dst.Values;
-                    if (Utils.Size(values) < _scoreSize)
-                        values = new ReadOnlyMemory<char>[_scoreSize];
+                    var editor = VBufferEditor.Create(ref dst, _scoreSize);
+                    var quantiles = _quantiles.GetValues();
                     for (int i = 0; i < _scoreSize; i++)
-                        values[i] = string.Format("{0} ({1})", prefix, _quantiles[i]).AsMemory();
-                    dst = new VBuffer<ReadOnlyMemory<char>>(_scoreSize, values);
+                        editor.Values[i] = string.Format("{0} ({1})", prefix, quantiles[i]).AsMemory();
+                    dst = editor.Commit();
                 };
         }
 
-        public override Delegate[] CreateGetters(IRow input, Func<int, bool> activeCols, out Action disposer)
+        private protected override Delegate[] CreateGettersCore(Row input, Func<int, bool> activeCols, out Action disposer)
         {
             Host.Assert(LabelIndex >= 0);
             Host.Assert(ScoreIndex >= 0);
@@ -396,8 +405,9 @@ namespace Microsoft.ML.Runtime.Data
                         labelGetter(ref label);
                         scoreGetter(ref score);
                         var lab = (Double)label;
+                        var l1Editor = VBufferEditor.CreateFromBuffer(ref l1);
                         foreach (var s in score.Items(all: true))
-                            l1.Values[s.Key] = Math.Abs(lab - s.Value);
+                            l1Editor.Values[s.Key] = Math.Abs(lab - s.Value);
                         cachedPosition = input.Position;
                     }
                 };
@@ -422,33 +432,34 @@ namespace Microsoft.ML.Runtime.Data
                     (ref VBuffer<Double> dst) =>
                     {
                         updateCacheIfNeeded();
-                        dst = new VBuffer<Double>(_scoreSize, 0, dst.Values, dst.Indices);
-                        VBufferUtils.ApplyWith(ref l1, ref dst, sqr);
+                        VBufferUtils.Resize(ref dst, _scoreSize, 0);
+                        VBufferUtils.ApplyWith(in l1, ref dst, sqr);
                     };
                 getters[L2Col] = l2Fn;
             }
             return getters;
         }
 
-        private void CheckInputColumnTypes(ISchema schema)
+        private void CheckInputColumnTypes(Schema schema)
         {
             Host.AssertNonEmpty(ScoreCol);
             Host.AssertNonEmpty(LabelCol);
 
-            var t = schema.GetColumnType(LabelIndex);
+            var t = schema[(int)LabelIndex].Type;
             if (t != NumberType.R4)
-                throw Host.Except("Label column '{0}' has type '{1}' but must be R4", LabelCol, t);
+                throw Host.ExceptSchemaMismatch(nameof(schema), "label", LabelCol, "float", t.ToString());
 
-            t = schema.GetColumnType(ScoreIndex);
-            if (t.VectorSize == 0 || (t.ItemType != NumberType.R4 && t.ItemType != NumberType.R8))
+            VectorType scoreType = schema[ScoreIndex].Type as VectorType;
+            if (scoreType == null || scoreType.Size == 0 || (scoreType.ItemType != NumberType.R4 && scoreType.ItemType != NumberType.R8))
             {
-                throw Host.Except(
-                    "Score column '{0}' has type '{1}' but must be a known length vector of type R4 or R8", ScoreCol, t);
+                throw Host.ExceptSchemaMismatch(nameof(schema), "score", ScoreCol, "known-size vector of float or double", t.ToString());
+
             }
         }
     }
 
-    public sealed class QuantileRegressionMamlEvaluator : MamlEvaluatorBase
+    [BestFriend]
+    internal sealed class QuantileRegressionMamlEvaluator : MamlEvaluatorBase
     {
         public sealed class Arguments : ArgumentsBase
         {
@@ -462,7 +473,7 @@ namespace Microsoft.ML.Runtime.Data
         private readonly int? _index;
         private readonly QuantileRegressionEvaluator _evaluator;
 
-        protected override IEvaluator Evaluator => _evaluator;
+        private protected override IEvaluator Evaluator => _evaluator;
 
         public QuantileRegressionMamlEvaluator(IHostEnvironment env, Arguments args)
             : base(args, env, MetadataUtils.Const.ScoreColumnKind.QuantileRegression, "QuantilsRegressionMamlEvaluator")
@@ -475,7 +486,7 @@ namespace Microsoft.ML.Runtime.Data
             _evaluator = new QuantileRegressionEvaluator(Host, evalArgs);
         }
 
-        protected override void PrintFoldResultsCore(IChannel ch, Dictionary<string, IDataView> metrics)
+        private protected override void PrintFoldResultsCore(IChannel ch, Dictionary<string, IDataView> metrics)
         {
             ch.AssertValue(metrics);
 
@@ -493,7 +504,7 @@ namespace Microsoft.ML.Runtime.Data
             ch.Info(unweightedMetrics);
         }
 
-        protected override IDataView GetOverallResultsCore(IDataView overall)
+        private protected override IDataView GetOverallResultsCore(IDataView overall)
         {
             return ExtractRelevantIndex(overall);
         }
@@ -501,17 +512,17 @@ namespace Microsoft.ML.Runtime.Data
         private IDataView ExtractRelevantIndex(IDataView data)
         {
             IDataView output = data;
-            for (int i = 0; i < data.Schema.ColumnCount; i++)
+            for (int i = 0; i < data.Schema.Count; i++)
             {
-                var type = data.Schema.GetColumnType(i);
-                if (type.IsKnownSizeVector && type.ItemType == NumberType.R8)
+                var type = data.Schema[i].Type;
+                if (type is VectorType vectorType && vectorType.IsKnownSize && vectorType.ItemType == NumberType.R8)
                 {
-                    var name = data.Schema.GetColumnName(i);
-                    var index = _index ?? type.VectorSize / 2;
+                    var name = data.Schema[i].Name;
+                    var index = _index ?? vectorType.Size / 2;
                     output = LambdaColumnMapper.Create(Host, "Quantile Regression", output, name, name, type, NumberType.R8,
-                        (ref VBuffer<Double> src, ref Double dst) => dst = src.GetItemOrDefault(index));
+                        (in VBuffer<Double> src, ref Double dst) => dst = src.GetItemOrDefault(index));
                     output = new ChooseColumnsByIndexTransform(Host,
-                        new ChooseColumnsByIndexTransform.Arguments() { Drop = true, Index = new[] { i } }, output);
+                        new ChooseColumnsByIndexTransform.Options() { Drop = true, Indices = new[] { i } }, output);
                 }
             }
             return output;
@@ -526,16 +537,16 @@ namespace Microsoft.ML.Runtime.Data
             yield return new MetricColumn("RSquared", QuantileRegressionEvaluator.RSquared);
         }
 
-        protected override IEnumerable<string> GetPerInstanceColumnsToSave(RoleMappedSchema schema)
+        private protected override IEnumerable<string> GetPerInstanceColumnsToSave(RoleMappedSchema schema)
         {
             Host.CheckValue(schema, nameof(schema));
-            Host.CheckParam(schema.Label != null, nameof(schema), "Schema must contain a label column");
+            Host.CheckParam(schema.Label.HasValue, nameof(schema), "Must contain a label column");
 
             // The quantile regression evaluator outputs the label and score columns.
-            yield return schema.Label.Name;
-            var scoreInfo = EvaluateUtils.GetScoreColumnInfo(Host, schema.Schema, ScoreCol, nameof(Arguments.ScoreColumn),
+            yield return schema.Label.Value.Name;
+            var scoreCol = EvaluateUtils.GetScoreColumn(Host, schema.Schema, ScoreCol, nameof(Arguments.ScoreColumn),
                 MetadataUtils.Const.ScoreColumnKind.QuantileRegression);
-            yield return scoreInfo.Name;
+            yield return scoreCol.Name;
 
             // Return the output columns.
             yield return RegressionPerInstanceEvaluator.L1;
@@ -543,7 +554,7 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public static partial class Evaluate
+    internal static partial class Evaluate
     {
         [TlcModule.EntryPoint(Name = "Models.QuantileRegressionEvaluator", Desc = "Evaluates a quantile regression scored dataset.")]
         public static CommonOutputs.CommonEvaluateOutput QuantileRegression(IHostEnvironment env, QuantileRegressionMamlEvaluator.Arguments input)
@@ -557,7 +568,7 @@ namespace Microsoft.ML.Runtime.Data
             string weight;
             string name;
             MatchColumns(host, input, out label, out weight, out name);
-            var evaluator = new QuantileRegressionMamlEvaluator(host, input);
+            IMamlEvaluator evaluator = new QuantileRegressionMamlEvaluator(host, input);
             var data = new RoleMappedData(input.Data, label, null, null, weight, name);
             var metrics = evaluator.Evaluate(data);
 

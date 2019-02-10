@@ -6,27 +6,28 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.Ensemble.Selector.SubsetSelector;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Training;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Ensemble.OutputCombiners;
+using Microsoft.ML.Ensemble.Selector;
+using Microsoft.ML.Ensemble.Selector.SubsetSelector;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Training;
 
-namespace Microsoft.ML.Runtime.Ensemble
+namespace Microsoft.ML.Ensemble
 {
     using Stopwatch = System.Diagnostics.Stopwatch;
 
-    public abstract class EnsembleTrainerBase<TOutput, TPredictor, TSelector, TCombiner> : TrainerBase<TPredictor>
+    internal abstract class EnsembleTrainerBase<TOutput, TPredictor, TSelector, TCombiner> : TrainerBase<TPredictor>
          where TPredictor : class, IPredictorProducing<TOutput>
          where TSelector : class, ISubModelSelector<TOutput>
          where TCombiner : class, IOutputCombiner<TOutput>
     {
         public abstract class ArgumentsBase : LearnerInputBaseWithLabel
         {
+#pragma warning disable CS0649 // These are set via reflection.
             [Argument(ArgumentType.AtMostOnce,
                 HelpText = "Number of models per batch. If not specified, will default to 50 if there is only one base predictor, " +
                 "or the number of base predictors otherwise.", ShortName = "nm", SortOrder = 3)]
@@ -54,6 +55,7 @@ namespace Microsoft.ML.Runtime.Ensemble
             public bool ShowMetrics;
 
             internal abstract IComponentFactory<ITrainer<IPredictorProducing<TOutput>>>[] GetPredictorFactories();
+#pragma warning restore CS0649
         }
 
         private const int DefaultNumModels = 50;
@@ -101,7 +103,7 @@ namespace Microsoft.ML.Runtime.Ensemble
             }
         }
 
-        public sealed override TPredictor Train(TrainContext context)
+        private protected sealed override TPredictor Train(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
 
@@ -127,7 +129,7 @@ namespace Microsoft.ML.Runtime.Ensemble
                 validationDataSetProportion = Math.Max(validationDataSetProportion, stackingTrainer.ValidationDatasetProportion);
 
             var needMetrics = Args.ShowMetrics || Combiner is IWeightedAverager;
-            var models = new List<FeatureSubsetModel<IPredictorProducing<TOutput>>>();
+            var models = new List<FeatureSubsetModel<TOutput>>();
 
             _subsetSelector.Initialize(data, NumModels, Args.BatchSize, validationDataSetProportion);
             int batchNumber = 1;
@@ -135,7 +137,7 @@ namespace Microsoft.ML.Runtime.Ensemble
             {
                 // 2. Core train
                 ch.Info("Training {0} learners for the batch {1}", Trainers.Length, batchNumber++);
-                var batchModels = new FeatureSubsetModel<IPredictorProducing<TOutput>>[Trainers.Length];
+                var batchModels = new FeatureSubsetModel<TOutput>[Trainers.Length];
 
                 Parallel.ForEach(_subsetSelector.GetSubsets(batch, Host.Rand),
                     new ParallelOptions() { MaxDegreeOfParallelism = Args.TrainParallel ? -1 : 1 },
@@ -147,7 +149,7 @@ namespace Microsoft.ML.Runtime.Ensemble
                         {
                             if (EnsureMinimumFeaturesSelected(subset))
                             {
-                                var model = new FeatureSubsetModel<IPredictorProducing<TOutput>>(
+                                var model = new FeatureSubsetModel<TOutput>(
                                     Trainers[(int)index].Train(subset.Data),
                                     subset.SelectedFeatures,
                                     null);
@@ -182,7 +184,7 @@ namespace Microsoft.ML.Runtime.Ensemble
             return CreatePredictor(models);
         }
 
-        private protected abstract TPredictor CreatePredictor(List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models);
+        private protected abstract TPredictor CreatePredictor(List<FeatureSubsetModel<TOutput>> models);
 
         private bool EnsureMinimumFeaturesSelected(Subset subset)
         {
@@ -197,7 +199,7 @@ namespace Microsoft.ML.Runtime.Ensemble
             return false;
         }
 
-        private protected virtual void PrintMetrics(IChannel ch, List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models)
+        private protected virtual void PrintMetrics(IChannel ch, List<FeatureSubsetModel<TOutput>> models)
         {
             // REVIEW: The formatting of this method is bizarre and seemingly not even self-consistent
             // w.r.t. its usage of |. Is this intentional?
@@ -210,12 +212,12 @@ namespace Microsoft.ML.Runtime.Ensemble
                 ch.Info("{0}{1}", string.Join("", model.Metrics.Select(m => string.Format("| {0} |", m.Value))), model.Predictor.GetType().Name);
         }
 
-        private protected static FeatureSubsetModel<T>[] CreateModels<T>(List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models) where T : IPredictor
+        private protected static FeatureSubsetModel<TOutput>[] CreateModels<T>(List<FeatureSubsetModel<TOutput>> models) where T : IPredictorProducing<TOutput>
         {
-            var subsetModels = new FeatureSubsetModel<T>[models.Count];
+            var subsetModels = new FeatureSubsetModel<TOutput>[models.Count];
             for (int i = 0; i < models.Count; i++)
             {
-                subsetModels[i] = new FeatureSubsetModel<T>(
+                subsetModels[i] = new FeatureSubsetModel<TOutput>(
                     (T)models[i].Predictor,
                     models[i].SelectedFeatures,
                     models[i].Metrics);

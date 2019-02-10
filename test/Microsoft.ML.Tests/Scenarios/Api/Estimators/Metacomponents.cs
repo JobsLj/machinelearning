@@ -2,10 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
-using System.Linq;
+using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.Conversions;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -18,18 +19,18 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         /// If they specify a regression or multi-class classifier ideally that should be a compile error.
         /// </summary>
         [Fact]
-        public void New_Metacomponents()
+        public void Metacomponents()
         {
             var ml = new MLContext();
-            var data = ml.Data.TextReader(MakeIrisTextLoaderArgs())
-                .Read(GetDataPath(TestDatasets.irisData.trainFilename));
+            var data = ml.Data.ReadFromTextFile<IrisData>(GetDataPath(TestDatasets.irisData.trainFilename), separatorChar: ',');
 
-            var sdcaTrainer = ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: (s) => { s.MaxIterations = 100; s.Shuffle = true; s.NumThreads = 1; });
+            var sdcaTrainer = ml.BinaryClassification.Trainers.StochasticDualCoordinateAscent(
+                new SdcaBinaryTrainer.Options { MaxIterations = 100, Shuffle = true, NumThreads = 1, });
 
-            var pipeline = new ConcatEstimator(ml, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
-                .Append(new TermEstimator(ml, "Label"), TransformerScope.TrainTest)
-                .Append(new Ova(ml, sdcaTrainer))
-                .Append(new KeyToValueEstimator(ml, "PredictedLabel"));
+            var pipeline = new ColumnConcatenatingEstimator (ml, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
+                .Append(ml.Transforms.Conversion.MapValueToKey("Label"), TransformerScope.TrainTest)
+                .Append(ml.MulticlassClassification.Trainers.OneVersusAll(sdcaTrainer))
+                .Append(ml.Transforms.Conversion.MapKeyToValue(("PredictedLabel")));
 
             var model = pipeline.Fit(data);
         }

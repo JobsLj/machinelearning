@@ -6,13 +6,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public static class InvertHashUtils
+    [BestFriend]
+    internal static class InvertHashUtils
     {
         /// <summary>
         /// Clears a destination StringBuilder. If it is currently null, allocates it.
@@ -34,33 +36,33 @@ namespace Microsoft.ML.Runtime.Data
         public static ValueMapper<T, StringBuilder> GetSimpleMapper<T>(Schema schema, int col)
         {
             Contracts.AssertValue(schema);
-            Contracts.Assert(0 <= col && col < schema.ColumnCount);
-            var type = schema.GetColumnType(col).ItemType;
+            Contracts.Assert(0 <= col && col < schema.Count);
+            var type = schema[col].Type.GetItemType();
             Contracts.Assert(type.RawType == typeof(T));
             var conv = Conversion.Conversions.Instance;
 
             // First: if not key, then get the standard string converison.
-            if (!type.IsKey)
+            if (!(type is KeyType keyType))
                 return conv.GetStringConversion<T>(type);
 
             bool identity;
             // Second choice: if key, utilize the KeyValues metadata for that key, if it has one and is text.
-            if (schema.HasKeyNames(col, type.KeyCount))
+            if (schema[col].HasKeyValues(keyType))
             {
                 // REVIEW: Non-textual KeyValues are certainly possible. Should we handle them?
                 // Get the key names.
                 VBuffer<ReadOnlyMemory<char>> keyValues = default;
-                schema.GetMetadata(MetadataUtils.Kinds.KeyValues, col, ref keyValues);
+                schema[col].GetKeyValues(ref keyValues);
                 ReadOnlyMemory<char> value = default;
 
                 // REVIEW: We could optimize for identity, but it's probably not worthwhile.
                 var keyMapper = conv.GetStandardConversion<T, uint>(type, NumberType.U4, out identity);
                 return
-                    (ref T src, ref StringBuilder dst) =>
+                    (in T src, ref StringBuilder dst) =>
                     {
                         ClearDst(ref dst);
                         uint intermediate = 0;
-                        keyMapper(ref src, ref intermediate);
+                        keyMapper(in src, ref intermediate);
                         if (intermediate == 0)
                             return;
                         keyValues.GetItemOrDefault((int)(intermediate - 1), ref value);
@@ -69,7 +71,7 @@ namespace Microsoft.ML.Runtime.Data
             }
 
             // Third choice: just use the key value itself, subject to offsetting by the min.
-            return conv.GetKeyStringConversion<T>(type.AsKey);
+            return conv.GetKeyStringConversion<T>(keyType);
         }
 
         public static ValueMapper<KeyValuePair<int, T>, StringBuilder> GetPairMapper<T>(ValueMapper<T, StringBuilder> submap)
@@ -77,13 +79,13 @@ namespace Microsoft.ML.Runtime.Data
             StringBuilder sb = null;
             char[] buffer = null;
             return
-                (ref KeyValuePair<int, T> pair, ref StringBuilder dst) =>
+                (in KeyValuePair<int, T> pair, ref StringBuilder dst) =>
                 {
                     ClearDst(ref dst);
                     dst.Append(pair.Key);
                     dst.Append(':');
                     var subval = pair.Value;
-                    submap(ref subval, ref sb);
+                    submap(in subval, ref sb);
                     AppendToEnd(sb, dst, ref buffer);
                 };
         }
@@ -100,14 +102,15 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public sealed class InvertHashCollector<T>
+    [BestFriend]
+    internal sealed class InvertHashCollector<T>
     {
         /// <summary>
         /// This is a small struct that is meant to compare akin to the value,
         /// but also maintain the order in which it was inserted, assuming that
         /// we're using something like a hashset where order is not preserved.
         /// </summary>
-        private struct Pair
+        private readonly struct Pair
         {
             public readonly T Value;
             public readonly int Order;
@@ -178,7 +181,7 @@ namespace Microsoft.ML.Runtime.Data
             _stringifyMapper = mapper;
             _comparer = new PairEqualityComparer(comparer);
             _slotToValueSet = new Dictionary<int, HashSet<Pair>>();
-            _copier = copier ?? ((ref T src, ref T dst) => dst = src);
+            _copier = copier ?? ((in T src, ref T dst) => dst = src);
         }
 
         private ReadOnlyMemory<char> Textify(ref StringBuilder sb, ref StringBuilder temp, ref char[] cbuffer, ref Pair[] buffer, HashSet<Pair> pairs)
@@ -199,7 +202,7 @@ namespace Microsoft.ML.Runtime.Data
             if (count == 1)
             {
                 var value = buffer[0].Value;
-                _stringifyMapper(ref value, ref temp);
+                _stringifyMapper(in value, ref temp);
                 return Utils.Size(temp) > 0 ? temp.ToString().AsMemory() : String.Empty.AsMemory();
             }
 
@@ -215,7 +218,7 @@ namespace Microsoft.ML.Runtime.Data
                 if (i > 0)
                     sb.Append(',');
                 var value = pair.Value;
-                _stringifyMapper(ref value, ref temp);
+                _stringifyMapper(in value, ref temp);
                 InvertHashUtils.AppendToEnd(temp, sb, ref cbuffer);
             }
             sb.Append('}');
@@ -293,7 +296,7 @@ namespace Microsoft.ML.Runtime.Data
             else
                 pairSet = _slotToValueSet[dstSlot] = new HashSet<Pair>(_comparer);
             T dst = default(T);
-            _copier(ref key, ref dst);
+            _copier(in key, ref dst);
             pairSet.Add(new Pair(dst, pairSet.Count));
         }
 
@@ -354,8 +357,9 @@ namespace Microsoft.ML.Runtime.Data
             if (!factory.TryReadCodec(ctx.Reader.BaseStream, out codec))
                 throw ch.ExceptDecode();
             ch.AssertValue(codec);
-            ch.CheckDecode(codec.Type.IsVector);
-            ch.CheckDecode(codec.Type.ItemType.IsText);
+            if (!(codec.Type is VectorType vectorType))
+                throw ch.ExceptDecode();
+            ch.CheckDecode(vectorType.ItemType is TextType);
             var textCodec = (IValueCodec<VBuffer<ReadOnlyMemory<char>>>)codec;
 
             var bufferLen = ctx.Reader.ReadInt32();
@@ -372,7 +376,7 @@ namespace Microsoft.ML.Runtime.Data
             }
         }
 
-        private static void Save(IChannel ch, ModelSaveContext ctx, CodecFactory factory, ref VBuffer<ReadOnlyMemory<char>> values)
+        private static void Save(IChannel ch, ModelSaveContext ctx, CodecFactory factory, in VBuffer<ReadOnlyMemory<char>> values)
         {
             Contracts.AssertValue(ch);
             ch.CheckValue(ctx, nameof(ctx));
@@ -388,9 +392,9 @@ namespace Microsoft.ML.Runtime.Data
             IValueCodec codec;
             var result = factory.TryGetCodec(new VectorType(TextType.Instance), out codec);
             ch.Assert(result);
-            ch.Assert(codec.Type.IsVector);
-            ch.Assert(codec.Type.VectorSize == 0);
-            ch.Assert(codec.Type.ItemType.RawType == typeof(ReadOnlyMemory<char>));
+            VectorType vectorType = (VectorType)codec.Type;
+            ch.Assert(vectorType.Size == 0);
+            ch.Assert(vectorType.ItemType == TextType.Instance);
             IValueCodec<VBuffer<ReadOnlyMemory<char>>> textCodec = (IValueCodec<VBuffer<ReadOnlyMemory<char>>>)codec;
 
             factory.WriteCodec(ctx.Writer.BaseStream, codec);
@@ -398,7 +402,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 using (var writer = textCodec.OpenWriter(mem))
                 {
-                    writer.Write(ref values);
+                    writer.Write(in values);
                     writer.Commit();
                 }
                 ctx.Writer.WriteByteArray(mem.ToArray());
@@ -412,7 +416,7 @@ namespace Microsoft.ML.Runtime.Data
             ctx.SaveTextStream("Terms.txt",
                 writer =>
                 {
-                    writer.WriteLine("# Number of terms = {0} of length {1}", v.Count, v.Length);
+                    writer.WriteLine("# Number of terms = {0} of length {1}", v.GetValues().Length, v.Length);
                     foreach (var pair in v.Items())
                     {
                         var text = pair.Value;
@@ -437,7 +441,7 @@ namespace Microsoft.ML.Runtime.Data
                 });
         }
 
-        public static void LoadAll(IHost host, ModelLoadContext ctx, int infoLim, out VBuffer<ReadOnlyMemory<char>>[] keyValues, out ColumnType[] kvTypes)
+        public static void LoadAll(IHost host, ModelLoadContext ctx, int infoLim, out VBuffer<ReadOnlyMemory<char>>[] keyValues, out VectorType[] kvTypes)
         {
             Contracts.AssertValue(host);
             host.AssertValue(ctx);
@@ -446,7 +450,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 // Try to find the key names.
                 VBuffer<ReadOnlyMemory<char>>[] keyValuesLocal = null;
-                ColumnType[] kvTypesLocal = null;
+                VectorType[] kvTypesLocal = null;
                 CodecFactory factory = null;
                 const string dirFormat = "Vocabulary_{0:000}";
                 for (int iinfo = 0; iinfo < infoLim; iinfo++)
@@ -458,7 +462,7 @@ namespace Microsoft.ML.Runtime.Data
                             if (keyValuesLocal == null)
                             {
                                 keyValuesLocal = new VBuffer<ReadOnlyMemory<char>>[infoLim];
-                                kvTypesLocal = new ColumnType[infoLim];
+                                kvTypesLocal = new VectorType[infoLim];
                                 factory = new CodecFactory(host);
                             }
                             Load(ch, c, factory, ref keyValuesLocal[iinfo]);
@@ -491,7 +495,7 @@ namespace Microsoft.ML.Runtime.Data
                     if (keyValues[iinfo].Length == 0)
                         continue;
                     ctx.SaveSubModel(string.Format(dirFormat, iinfo),
-                        c => Save(ch, c, factory, ref keyValues[iinfo]));
+                        c => Save(ch, c, factory, in keyValues[iinfo]));
                 }
             }
         }

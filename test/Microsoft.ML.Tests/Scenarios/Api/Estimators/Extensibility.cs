@@ -2,12 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
 using System;
 using System.Linq;
+using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.Conversions;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -21,12 +22,12 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         /// usage of already established components), but should still be possible.
         /// </summary>
         [Fact]
-        void New_Extensibility()
+        void Extensibility()
         {
             var dataPath = GetDataPath(TestDatasets.irisData.trainFilename);
 
             var ml = new MLContext();
-            var data = ml.Data.TextReader(MakeIrisTextLoaderArgs())
+            var data = ml.Data.CreateTextLoader(TestDatasets.irisData.GetLoaderColumns(), separatorChar: ',')
                 .Read(dataPath);
 
             Action<IrisData, IrisData> action = (i, j) =>
@@ -37,17 +38,18 @@ namespace Microsoft.ML.Tests.Scenarios.Api
                 j.SepalLength = i.SepalLength;
                 j.SepalWidth = i.SepalWidth;
             };
-            var pipeline = new ConcatEstimator(ml, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
-                .Append(new MyLambdaTransform<IrisData, IrisData>(ml, action), TransformerScope.TrainTest)
-                .Append(new TermEstimator(ml, "Label"), TransformerScope.TrainTest)
-                .Append(ml.MulticlassClassification.Trainers.StochasticDualCoordinateAscent(advancedSettings: (s) => { s.MaxIterations = 100; s.Shuffle = true; s.NumThreads = 1; }))
-                .Append(new KeyToValueEstimator(ml, "PredictedLabel"));
+            var pipeline = new ColumnConcatenatingEstimator (ml, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
+                .Append(new CustomMappingEstimator<IrisData, IrisData>(ml, action, null), TransformerScope.TrainTest)
+                .Append(new ValueToKeyMappingEstimator(ml, "Label"), TransformerScope.TrainTest)
+                .Append(ml.MulticlassClassification.Trainers.StochasticDualCoordinateAscent(
+                    new SdcaMultiClassTrainer.Options { MaxIterations = 100, Shuffle = true, NumThreads = 1 }))
+                .Append(new KeyToValueMappingEstimator(ml, "PredictedLabel"));
 
             var model = pipeline.Fit(data).GetModelFor(TransformerScope.Scoring);
-            var engine = model.MakePredictionFunction<IrisDataNoLabel, IrisPrediction>(ml);
+            var engine = model.CreatePredictionEngine<IrisDataNoLabel, IrisPrediction>(ml);
 
-            var testLoader = TextLoader.ReadFile(ml, MakeIrisTextLoaderArgs(), new MultiFileSource(dataPath));
-            var testData = testLoader.AsEnumerable<IrisData>(ml, false);
+            var testLoader = ml.Data.ReadFromTextFile(dataPath, TestDatasets.irisData.GetLoaderColumns(), separatorChar: ',');
+            var testData = ml.CreateEnumerable<IrisData>(testLoader, false);
             foreach (var input in testData.Take(20))
             {
                 var prediction = engine.Predict(input);

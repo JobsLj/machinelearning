@@ -2,18 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using Float = System.Single;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
     /// <summary>
     /// Some useful math methods.
     /// </summary>
-    public static class MathUtils
+    [BestFriend]
+    internal static class MathUtils
     {
         public static Float ToFloat(this Double dbl)
         {
@@ -132,40 +131,23 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         }
 
         /// <summary>
-        /// Finds the first index of the max element of the array.
+        /// Finds the first index of the max element of the span.
         /// NaNs are ignored. If all the elements to consider are NaNs, -1 is
         /// returned. The caller should distinguish in this case between two
         /// possibilities:
         /// 1) The number of the element to consider is zero.
         /// 2) All the elements to consider are NaNs.
         /// </summary>
-        /// <param name="a">an array</param>
+        /// <param name="a">The span of floats.</param>
         /// <returns>the first index of the max element</returns>
-        public static int ArgMax(Float[] a)
+        public static int ArgMax(ReadOnlySpan<Float> a)
         {
-            return ArgMax(a, Utils.Size(a));
-        }
-
-        /// <summary>
-        /// Finds the first index of the max element of the array.
-        /// NaNs are ignored. If all the elements to consider are NaNs, -1 is
-        /// returned. The caller should distinguish in this case between two
-        /// possibilities:
-        /// 1) The number of the element to consider is zero.
-        /// 2) All the elements to consider are NaNs.
-        /// </summary>
-        /// <param name="a">an array</param>
-        /// <param name="count">number of the element in the array to consider</param>
-        /// <returns>the first index of the max element</returns>
-        public static int ArgMax(Float[] a, int count)
-        {
-            Contracts.Assert(0 <= count && count <= Utils.Size(a));
-            if (count == 0)
+            if (a.IsEmpty)
                 return -1;
 
             int amax = -1;
             Float max = Float.NegativeInfinity;
-            for (int i = count - 1; i >= 0; i--)
+            for (int i = a.Length - 1; i >= 0; i--)
             {
                 if (max <= a[i])
                 {
@@ -178,40 +160,23 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         }
 
         /// <summary>
-        /// Finds the first index of the minimum element of the array.
+        /// Finds the first index of the minimum element of the span.
         /// NaNs are ignored. If all the elements to consider are NaNs, -1 is
         /// returned. The caller should distinguish in this case between two
         /// possibilities:
         /// 1) The number of the element to consider is zero.
         /// 2) All the elements to consider are NaNs.
         /// </summary>
-        /// <param name="a">an array</param>
+        /// <param name="a">The span of floats.</param>
         /// <returns>the first index of the minimum element</returns>
-        public static int ArgMin(Float[] a)
+        public static int ArgMin(ReadOnlySpan<Float> a)
         {
-            return ArgMin(a, Utils.Size(a));
-        }
-
-        /// <summary>
-        /// Finds the first index of the minimum element of the array.
-        /// NaNs are ignored. If all the elements to consider are NaNs, -1 is
-        /// returned. The caller should distinguish in this case between two
-        /// possibilities:
-        /// 1) The number of the element to consider is zero.
-        /// 2) All the elements to consider are NaNs.
-        /// </summary>
-        /// <param name="a">an array</param>
-        /// <param name="count">number of the element in the array to consider</param>
-        /// <returns>the first index of the minimum element</returns>
-        public static int ArgMin(Float[] a, int count)
-        {
-            Contracts.Assert(0 <= count && count <= Utils.Size(a));
-            if (count == 0)
+            if (a.IsEmpty)
                 return -1;
 
             int amin = -1;
             Float min = Float.PositiveInfinity;
-            for (int i = count - 1; i >= 0; i--)
+            for (int i = a.Length - 1; i >= 0; i--)
             {
                 if (min >= a[i])
                 {
@@ -232,18 +197,14 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         /// <summary>
         /// computes the "softmax" function: log sum_i exp x_i
         /// </summary>
-        /// <param name="inputs">Array of numbers to softmax</param>
-        /// <param name="count">the number of input array elements to process</param>
+        /// <param name="inputs">Span of numbers to softmax</param>
         /// <returns>the softmax of the numbers</returns>
         /// <remarks>may have slightly lower roundoff error if inputs are sorted, smallest first</remarks>
-        public static Float SoftMax(Float[] inputs, int count)
+        public static Float SoftMax(ReadOnlySpan<float> inputs)
         {
-            Contracts.AssertValue(inputs);
-            Contracts.Assert(0 < count & count <= inputs.Length);
-
             int maxIdx = 0;
             Float max = Float.NegativeInfinity;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < inputs.Length; i++)
             {
                 if (inputs[i] > max)
                 {
@@ -255,13 +216,13 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             if (Float.IsNegativeInfinity(max))
                 return Float.NegativeInfinity;
 
-            if (count == 1)
+            if (inputs.Length == 1)
                 return max;
 
             double intermediate = 0.0;
             Float cutoff = max - LogTolerance;
 
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < inputs.Length; i++)
             {
                 if (i == maxIdx)
                     continue;
@@ -544,7 +505,15 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         /// </summary>
         public static Float SigmoidSlow(Float x)
         {
-            return 1 / (1 + ExpSlow(-x));
+            // The following two expressions are mathematically equivalent. Due to the potential of getting overflow we should
+            // not call exp(x) for large positive x: instead, we modify the expression to compute exp(-x).
+            if (x > 0)
+                return 1 / (1 + ExpSlow(-x));
+            else
+            {
+                var ex = ExpSlow(x);
+                return  ex / (1 + ex);
+            }
         }
 
         /// <summary>
@@ -763,7 +732,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             return (src[iv - 1] + src[iv]) / 2;
         }
 
-        public static Double CosineSimilarity(Float[] a, Float[] b, int aIdx, int bIdx, int len)
+        public static Double CosineSimilarity(ReadOnlySpan<Float> a, ReadOnlySpan<Float> b, int aIdx, int bIdx, int len)
         {
             const Double epsilon = 1e-12f;
             Contracts.Assert(len > 0);

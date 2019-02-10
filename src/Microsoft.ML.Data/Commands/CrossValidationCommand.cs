@@ -7,20 +7,23 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.Conversions;
 
 [assembly: LoadableClass(typeof(CrossValidationCommand), typeof(CrossValidationCommand.Arguments), typeof(SignatureCommand),
     "Cross Validation", CrossValidationCommand.LoadName)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public sealed class CrossValidationCommand : DataCommand.ImplBase<CrossValidationCommand.Arguments>
+    [BestFriend]
+    internal sealed class CrossValidationCommand : DataCommand.ImplBase<CrossValidationCommand.Arguments>
     {
         // REVIEW: We need a way to specify different data sets, not just LabeledExamples.
         public sealed class Arguments : DataCommand.ArgumentsBase
@@ -55,8 +58,9 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Column to use for stratification", ShortName = "strat", SortOrder = 7)]
             public string StratificationColumn;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
-            public KeyValuePair<string, string>[] CustomColumn;
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'",
+                Name = "CustomColumn", ShortName = "col", SortOrder = 10)]
+            public KeyValuePair<string, string>[] CustomColumns;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Number of folds in k-fold cross-validation", ShortName = "k")]
             public int NumFolds = 2;
@@ -70,8 +74,9 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Whether we should cache input training data", ShortName = "cache")]
             public bool? CacheData;
 
-            [Argument(ArgumentType.Multiple, HelpText = "Transforms to apply prior to splitting the data into folds", ShortName = "prexf", SignatureType = typeof(SignatureDataTransform))]
-            public KeyValuePair<string, IComponentFactory<IDataView, IDataTransform>>[] PreTransform;
+            [Argument(ArgumentType.Multiple, HelpText = "Transforms to apply prior to splitting the data into folds",
+                Name = "PreTransform", ShortName = "prexf", SignatureType = typeof(SignatureDataTransform))]
+            public KeyValuePair<string, IComponentFactory<IDataView, IDataTransform>>[] PreTransforms;
 
             [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "The validation data file", ShortName = "valid")]
             public string ValidationFile;
@@ -150,7 +155,7 @@ namespace Microsoft.ML.Runtime.Data
             IDataLoader loader = CreateRawLoader();
 
             // If the per-instance results are requested and there is no name column, add a GenerateNumberTransform.
-            var preXf = Args.PreTransform;
+            var preXf = Args.PreTransforms;
             if (!string.IsNullOrEmpty(Args.OutputDataFile))
             {
                 string name = TrainUtils.MatchNameOrDefaultOrNull(ch, loader.Schema, nameof(Args.NameColumn), Args.NameColumn, DefaultColumnNames.Name);
@@ -163,8 +168,8 @@ namespace Microsoft.ML.Runtime.Data
                                 "", ComponentFactoryUtils.CreateFromFunction<IDataView, IDataTransform>(
                                     (env, input) =>
                                     {
-                                        var args = new GenerateNumberTransform.Arguments();
-                                        args.Column = new[] { new GenerateNumberTransform.Column() { Name = DefaultColumnNames.Name }, };
+                                        var args = new GenerateNumberTransform.Options();
+                                        args.Columns = new[] { new GenerateNumberTransform.Column() { Name = DefaultColumnNames.Name }, };
                                         args.UseCounter = true;
                                         return new GenerateNumberTransform(env, args, input);
                                     }))
@@ -260,7 +265,7 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         private RoleMappedData CreateRoleMappedData(IHostEnvironment env, IChannel ch, IDataView data, ITrainer trainer)
         {
-            foreach (var kvp in Args.Transform)
+            foreach (var kvp in Args.Transforms)
                 data = kvp.Value.CreateComponent(env, data);
 
             var schema = data.Schema;
@@ -273,7 +278,7 @@ namespace Microsoft.ML.Runtime.Data
             TrainUtils.AddNormalizerIfNeeded(env, ch, trainer, ref data, features, Args.NormalizeFeatures);
 
             // Training pipe and examples.
-            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumn);
+            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumns);
 
             return new RoleMappedData(data, label, features, group, weight, name, customCols);
         }
@@ -295,8 +300,8 @@ namespace Microsoft.ML.Runtime.Data
                 if (group != null && schema.TryGetColumnIndex(group, out index))
                 {
                     // Check if group column key type with known cardinality.
-                    var type = schema.GetColumnType(index);
-                    if (type.KeyCount > 0)
+                    var type = schema[index].Type;
+                    if (type.GetKeyCount() > 0)
                         stratificationColumn = group;
                 }
             }
@@ -308,10 +313,10 @@ namespace Microsoft.ML.Runtime.Data
                 int inc = 0;
                 while (input.Schema.TryGetColumnIndex(stratificationColumn, out tmp))
                     stratificationColumn = string.Format("StratificationColumn_{0:000}", ++inc);
-                var keyGenArgs = new GenerateNumberTransform.Arguments();
+                var keyGenArgs = new GenerateNumberTransform.Options();
                 var col = new GenerateNumberTransform.Column();
                 col.Name = stratificationColumn;
-                keyGenArgs.Column = new[] { col };
+                keyGenArgs.Columns = new[] { col };
                 output = new GenerateNumberTransform(Host, keyGenArgs, input);
             }
             else
@@ -319,7 +324,7 @@ namespace Microsoft.ML.Runtime.Data
                 int col;
                 if (!input.Schema.TryGetColumnIndex(stratificationColumn, out col))
                     throw ch.ExceptUserArg(nameof(Arguments.StratificationColumn), "Column '{0}' does not exist", stratificationColumn);
-                var type = input.Schema.GetColumnType(col);
+                var type = input.Schema[col].Type;
                 if (!RangeFilter.IsValidRangeFilterColumnType(ch, type))
                 {
                     ch.Info("Hashing the stratification column");
@@ -328,7 +333,7 @@ namespace Microsoft.ML.Runtime.Data
                     int inc = 0;
                     while (input.Schema.TryGetColumnIndex(stratificationColumn, out tmp))
                         stratificationColumn = string.Format("{0}_{1:000}", origStratCol, ++inc);
-                    output = new HashEstimator(Host, origStratCol, stratificationColumn, 30).Fit(input).Transform(input);
+                    output = new HashingEstimator(Host, origStratCol, stratificationColumn, 30).Fit(input).Transform(input);
                 }
             }
 
@@ -353,7 +358,7 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class FoldHelper
         {
-            public struct FoldResult
+            public readonly struct FoldResult
             {
                 public readonly Dictionary<string, IDataView> Metrics;
                 public readonly Schema ScoreSchema;
@@ -509,7 +514,7 @@ namespace Microsoft.ML.Runtime.Data
                     ITrainer trainer = _trainer.CreateComponent(host);
 
                     // Train pipe.
-                    var trainFilter = new RangeFilter.Arguments();
+                    var trainFilter = new RangeFilter.Options();
                     trainFilter.Column = _splitColumn;
                     trainFilter.Min = (Double)fold / _numFolds;
                     trainFilter.Max = (Double)(fold + 1) / _numFolds;
@@ -519,7 +524,7 @@ namespace Microsoft.ML.Runtime.Data
                     var trainData = _createExamples(host, ch, trainPipe, trainer);
 
                     // Test pipe.
-                    var testFilter = new RangeFilter.Arguments();
+                    var testFilter = new RangeFilter.Options();
                     testFilter.Column = trainFilter.Column;
                     testFilter.Min = trainFilter.Min;
                     testFilter.Max = trainFilter.Max;

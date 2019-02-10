@@ -2,14 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
-using System.Linq;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using BitArray = System.Collections.BitArray;
 
@@ -77,12 +75,17 @@ namespace Microsoft.ML.Runtime.Data
         /// Constructs a new key column from an array where values are copied to output simply
         /// by being assigned.
         /// </summary>
-        public void AddColumn(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getKeyValues, ulong keyMin, int keyCount, params uint[] values)
+        /// <param name="name">The name of the column.</param>
+        /// <param name="getKeyValues">The delegate that does a reverse lookup based upon the given key. This is for metadata creation</param>
+        /// <param name="keyCount">The count of unique keys specified in values</param>
+        /// <param name="values">The values to add to the column. Note that since this is creating a <see cref="KeyType"/> column, the values will be offset by 1.</param>
+        public void AddColumn<T1>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getKeyValues, ulong keyCount, params T1[] values)
         {
             _host.CheckValue(getKeyValues, nameof(getKeyValues));
             _host.CheckParam(keyCount > 0, nameof(keyCount));
             CheckLength(name, values);
-            _columns.Add(new AssignmentColumn<uint>(new KeyType(DataKind.U4, keyMin, keyCount), values));
+            values.GetType().GetElementType().TryGetDataKind(out DataKind kind);
+            _columns.Add(new AssignmentColumn<T1>(new KeyType(kind.ToType(), keyCount), values));
             _getKeyValues.Add(name, getKeyValues);
             _names.Add(name);
         }
@@ -197,7 +200,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public Schema Schema { get { return _schema; } }
 
-            public long? GetRowCount(bool lazy = true) { return _rowCount; }
+            public long? GetRowCount() { return _rowCount; }
 
             public bool CanShuffle { get { return true; } }
 
@@ -211,46 +214,46 @@ namespace Microsoft.ML.Runtime.Data
                 _host.Assert(builder._names.Count == builder._columns.Count);
                 _columns = builder._columns.ToArray();
 
-                var schemaCols = new Schema.Column[_columns.Length];
-                for(int i=0; i<schemaCols.Length; i++)
+                var schemaBuilder = new SchemaBuilder();
+                for(int i=0; i< _columns.Length; i++)
                 {
-                    var meta = new Schema.Metadata.Builder();
+                    var meta = new MetadataBuilder();
 
                     if (builder._getSlotNames.TryGetValue(builder._names[i], out var slotNamesGetter))
-                        meta.AddSlotNames(_columns[i].Type.VectorSize, slotNamesGetter);
+                        meta.AddSlotNames(_columns[i].Type.GetVectorSize(), slotNamesGetter);
 
                     if (builder._getKeyValues.TryGetValue(builder._names[i], out var keyValueGetter))
-                        meta.AddKeyValues(_columns[i].Type.KeyCount, TextType.Instance, keyValueGetter);
-                    schemaCols[i] = new Schema.Column(builder._names[i], _columns[i].Type, meta.GetMetadata());
+                        meta.AddKeyValues(_columns[i].Type.GetKeyCountAsInt32(_host), TextType.Instance, keyValueGetter);
+                    schemaBuilder.AddColumn(builder._names[i], _columns[i].Type, meta.GetMetadata());
                 }
 
-                _schema = new Schema(schemaCols);
+                _schema = schemaBuilder.GetSchema();
                 _rowCount = rowCount;
             }
 
-            public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
+            public RowCursor GetRowCursor(IEnumerable<Schema.Column> columnsNeeded, Random rand = null)
             {
-                _host.CheckValue(predicate, nameof(predicate));
+                var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, Schema);
+
                 _host.CheckValueOrNull(rand);
-                return new RowCursor(_host, this, predicate, rand);
+                return new Cursor(_host, this, predicate, rand);
             }
 
-            public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator,
-                Func<int, bool> predicate, int n, IRandom rand = null)
+            public RowCursor[] GetRowCursorSet(IEnumerable<Schema.Column> columnsNeeded, int n, Random rand = null)
             {
-                _host.CheckValue(predicate, nameof(predicate));
+                var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, Schema);
+
                 _host.CheckValueOrNull(rand);
-                consolidator = null;
-                return new IRowCursor[] { new RowCursor(_host, this, predicate, rand) };
+                return new RowCursor[] { new Cursor(_host, this, predicate, rand) };
             }
 
-            private sealed class RowCursor : RootCursorBase, IRowCursor
+            private sealed class Cursor : RootCursorBase
             {
                 private readonly DataView _view;
                 private readonly BitArray _active;
                 private readonly int[] _indices;
 
-                public Schema Schema => _view.Schema;
+                public override Schema Schema => _view.Schema;
 
                 public override long Batch
                 {
@@ -258,57 +261,57 @@ namespace Microsoft.ML.Runtime.Data
                     get { return 0; }
                 }
 
-                public RowCursor(IChannelProvider provider, DataView view, Func<int, bool> predicate, IRandom rand)
+                public Cursor(IChannelProvider provider, DataView view, Func<int, bool> predicate, Random rand)
                     : base(provider)
                 {
                     Ch.AssertValue(view);
                     Ch.AssertValueOrNull(rand);
-                    Ch.Assert(view.Schema.ColumnCount >= 0);
+                    Ch.Assert(view.Schema.Count >= 0);
 
                     _view = view;
-                    _active = new BitArray(view.Schema.ColumnCount);
+                    _active = new BitArray(view.Schema.Count);
                     if (predicate == null)
                         _active.SetAll(true);
                     else
                     {
-                        for (int i = 0; i < view.Schema.ColumnCount; ++i)
+                        for (int i = 0; i < view.Schema.Count; ++i)
                             _active[i] = predicate(i);
                     }
                     if (rand != null)
                         _indices = Utils.GetRandomPermutation(rand, view._rowCount);
                 }
 
-                public override ValueGetter<UInt128> GetIdGetter()
+                public override ValueGetter<RowId> GetIdGetter()
                 {
                     if (_indices == null)
                     {
                         return
-                            (ref UInt128 val) =>
+                            (ref RowId val) =>
                             {
-                                Ch.Check(IsGood, "Cannot call ID getter in current state");
-                                val = new UInt128((ulong)Position, 0);
+                                Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                                val = new RowId((ulong)Position, 0);
                             };
                     }
                     else
                     {
                         return
-                            (ref UInt128 val) =>
+                            (ref RowId val) =>
                             {
-                                Ch.Check(IsGood, "Cannot call ID getter in current state");
-                                val = new UInt128((ulong)MappedIndex(), 0);
+                                Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                                val = new RowId((ulong)MappedIndex(), 0);
                             };
                     }
                 }
 
-                public bool IsColumnActive(int col)
+                public override bool IsColumnActive(int col)
                 {
-                    Ch.Check(0 <= col & col < Schema.ColumnCount);
+                    Ch.Check(0 <= col & col < Schema.Count);
                     return _active[col];
                 }
 
-                public ValueGetter<TValue> GetGetter<TValue>(int col)
+                public override ValueGetter<TValue> GetGetter<TValue>(int col)
                 {
-                    Ch.Check(0 <= col & col < Schema.ColumnCount);
+                    Ch.Check(0 <= col & col < Schema.Count);
                     Ch.Check(_active[col], "column is not active");
                     var column = _view._columns[col] as Column<TValue>;
                     if (column == null)
@@ -317,23 +320,15 @@ namespace Microsoft.ML.Runtime.Data
                     return
                         (ref TValue value) =>
                         {
-                            Ch.Check(IsGood);
+                            Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
                             column.CopyOut(MappedIndex(), ref value);
                         };
                 }
 
                 protected override bool MoveNextCore()
                 {
-                    Ch.Assert(State != CursorState.Done);
                     Ch.Assert(Position < _view._rowCount);
                     return 1 < _view._rowCount - Position;
-                }
-
-                protected override bool MoveManyCore(long count)
-                {
-                    Ch.Assert(State != CursorState.Done);
-                    Ch.Assert(Position < _view._rowCount);
-                    return count < _view._rowCount - Position;
                 }
 
                 private int MappedIndex()
@@ -393,7 +388,7 @@ namespace Microsoft.ML.Runtime.Data
             /// compromising this object's ownership of <c>src</c>. What that operation will be
             /// will depend on the types.
             /// </summary>
-            protected abstract void CopyOut(ref TIn src, ref TOut dst);
+            protected abstract void CopyOut(in TIn src, ref TOut dst);
 
             /// <summary>
             /// Produce the output value given the index. This overload utilizes the <c>CopyOut</c>
@@ -402,7 +397,7 @@ namespace Microsoft.ML.Runtime.Data
             public override void CopyOut(int index, ref TOut value)
             {
                 Contracts.Assert(0 <= index & index < _values.Length);
-                CopyOut(ref _values[index], ref value);
+                CopyOut(in _values[index], ref value);
             }
         }
 
@@ -417,7 +412,7 @@ namespace Microsoft.ML.Runtime.Data
             {
             }
 
-            protected override void CopyOut(ref T src, ref T dst)
+            protected override void CopyOut(in T src, ref T dst)
             {
                 dst = src;
             }
@@ -433,7 +428,7 @@ namespace Microsoft.ML.Runtime.Data
             {
             }
 
-            protected override void CopyOut(ref string src, ref ReadOnlyMemory<char> dst)
+            protected override void CopyOut(in string src, ref ReadOnlyMemory<char> dst)
             {
                 dst = src.AsMemory();
             }
@@ -482,7 +477,7 @@ namespace Microsoft.ML.Runtime.Data
             {
             }
 
-            protected override void CopyOut(ref VBuffer<T> src, ref VBuffer<T> dst)
+            protected override void CopyOut(in VBuffer<T> src, ref VBuffer<T> dst)
             {
                 src.CopyTo(ref dst);
             }
@@ -495,7 +490,7 @@ namespace Microsoft.ML.Runtime.Data
             {
             }
 
-            protected override void CopyOut(ref T[] src, ref VBuffer<T> dst)
+            protected override void CopyOut(in T[] src, ref VBuffer<T> dst)
             {
                 VBuffer<T>.Copy(src, 0, ref dst, Utils.Size(src));
             }
@@ -511,7 +506,7 @@ namespace Microsoft.ML.Runtime.Data
                 _bldr = new BufferBuilder<T>(combiner);
             }
 
-            protected override void CopyOut(ref T[] src, ref VBuffer<T> dst)
+            protected override void CopyOut(in T[] src, ref VBuffer<T> dst)
             {
                 var length = Utils.Size(src);
                 _bldr.Reset(length, false);

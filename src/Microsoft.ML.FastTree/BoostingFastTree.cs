@@ -2,30 +2,35 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Linq;
 using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Internal.Internallearn;
+using Float = System.Single;
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
     public abstract class BoostingFastTreeTrainerBase<TArgs, TTransformer, TModel> : FastTreeTrainerBase<TArgs, TTransformer, TModel>
         where TTransformer : ISingleFeaturePredictionTransformer<TModel>
         where TArgs : BoostedTreeArgs, new()
-        where TModel : IPredictorProducing<Float>
+        where TModel : class
     {
         protected BoostingFastTreeTrainerBase(IHostEnvironment env, TArgs args, SchemaShape.Column label) : base(env, args, label)
         {
         }
 
-        protected BoostingFastTreeTrainerBase(IHostEnvironment env, SchemaShape.Column label, string featureColumn,
-            string weightColumn = null, string groupIdColumn = null, Action<TArgs> advancedSettings = null)
-            : base(env, label, featureColumn, weightColumn, groupIdColumn, advancedSettings)
+        protected BoostingFastTreeTrainerBase(IHostEnvironment env,
+            SchemaShape.Column label,
+            string featureColumn,
+            string weightColumn,
+            string groupIdColumn,
+            int numLeaves,
+            int numTrees,
+            int minDatapointsInLeaves,
+            double learningRate)
+            : base(env, label, featureColumn, weightColumn, groupIdColumn, numLeaves, numTrees, minDatapointsInLeaves)
         {
+            Args.LearningRates = learningRate;
         }
 
         protected override void CheckArgs(IChannel ch)
@@ -56,7 +61,7 @@ namespace Microsoft.ML.Runtime.FastTree
             base.CheckArgs(ch);
         }
 
-        protected override TreeLearner ConstructTreeLearner(IChannel ch)
+        private protected override TreeLearner ConstructTreeLearner(IChannel ch)
         {
             return new LeastSquaresRegressionTreeLearner(
                 TrainSet, Args.NumLeaves, Args.MinDocumentsInLeafs, Args.EntropyCoefficient,
@@ -67,7 +72,7 @@ namespace Microsoft.ML.Runtime.FastTree
                 Args.MinDocsPercentageForCategoricalSplit, Args.Bundling, Args.MinDocsForCategoricalSplit, Args.Bias);
         }
 
-        protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
+        private protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
         {
             Contracts.CheckValue(ch, nameof(ch));
             OptimizationAlgorithm optimizationAlgorithm;

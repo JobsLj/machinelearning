@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Data;
 using System;
 using System.IO;
+using Microsoft.ML.Data;
 using Xunit;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed class FileSource
     {
@@ -18,7 +18,7 @@ namespace Microsoft.ML.Runtime.RunTests
             var fileSource = new MultiFileSource("adult.txt");
             Assert.True(fileSource.Count == 1);
 
-            fileSource = new MultiFileSource("adult.train", "adult.test");
+            fileSource = new MultiFileSource("adult.tiny.with-schema.txt", "adult.tiny.with-schema.txt");
             Assert.True(fileSource.Count == 2, $"Error passing multiple paths to {nameof(MultiFileSource)}");
 
             //creating a directory with three files for the tests
@@ -36,7 +36,7 @@ namespace Microsoft.ML.Runtime.RunTests
             fileSource = new MultiFileSource(Path.Combine(dirName, "..."));
             Assert.True(fileSource.Count == 2, $"Error passing concatenated paths to {nameof(MultiFileSource)}");
 
-            Assert.Throws<InvalidOperationException>(() => new MultiFileSource($"{file1}+{file2}", "adult.test"));
+            Assert.Throws<InvalidOperationException>(() => new MultiFileSource($"{file1}+{file2}", "adult.tiny.with-schema.txt"));
         }
     }
 }

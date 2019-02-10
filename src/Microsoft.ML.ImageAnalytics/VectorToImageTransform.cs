@@ -5,13 +5,14 @@
 using System;
 using System.Drawing;
 using System.Text;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.ImageAnalytics;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.ImageAnalytics;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 
 [assembly: LoadableClass(VectorToImageTransform.Summary, typeof(VectorToImageTransform), typeof(VectorToImageTransform.Arguments),
     typeof(SignatureDataTransform), VectorToImageTransform.UserName, "VectorToImageTransform", "VectorToImage")]
@@ -19,7 +20,7 @@ using Microsoft.ML.Runtime.Model;
 [assembly: LoadableClass(VectorToImageTransform.Summary, typeof(VectorToImageTransform), null, typeof(SignatureLoadDataTransform),
     VectorToImageTransform.UserName, VectorToImageTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.ImageAnalytics
+namespace Microsoft.ML.ImageAnalytics
 {
     // REVIEW: Rewrite as LambdaTransform to simplify.
 
@@ -58,7 +59,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             [Argument(ArgumentType.AtMostOnce, HelpText = "Scale factor")]
             public Single? Scale;
 
-            public static Column Parse(string str)
+            internal static Column Parse(string str)
             {
                 Contracts.AssertNonEmpty(str);
 
@@ -68,7 +69,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 return null;
             }
 
-            public bool TryUnparse(StringBuilder sb)
+            internal bool TryUnparse(StringBuilder sb)
             {
                 Contracts.AssertValue(sb);
                 if (ContainsAlpha != null || ContainsRed != null || ContainsGreen != null || ContainsBlue != null || ImageWidth != null ||
@@ -82,8 +83,8 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
 
         public class Arguments : TransformInputBase
         {
-            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:src)", ShortName = "col", SortOrder = 1)]
-            public Column[] Column;
+            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:src)", Name = "Column", ShortName = "col", SortOrder = 1)]
+            public Column[] Columns;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Whether to use alpha channel", ShortName = "alpha")]
             public bool ContainsAlpha = false;
@@ -194,7 +195,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 Interleave = ctx.Reader.ReadBoolByte();
             }
 
-            public void Save(ModelSaveContext ctx)
+            internal void Save(ModelSaveContext ctx)
             {
                 Contracts.AssertValue(ctx);
 
@@ -247,17 +248,17 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
 
         // Public constructor corresponding to SignatureDataTransform.
         public VectorToImageTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(env, RegistrationName, Contracts.CheckRef(args, nameof(args)).Column, input,
+            : base(env, RegistrationName, Contracts.CheckRef(args, nameof(args)).Columns, input,
                 t => t is VectorType ? null : "Expected VectorType type")
         {
             Host.AssertNonEmpty(Infos);
-            Host.Assert(Infos.Length == Utils.Size(args.Column));
+            Host.Assert(Infos.Length == Utils.Size(args.Columns));
 
             _exes = new ColInfoEx[Infos.Length];
             _types = new ImageType[Infos.Length];
             for (int i = 0; i < _exes.Length; i++)
             {
-                var item = args.Column[i];
+                var item = args.Columns[i];
                 _exes[i] = new ColInfoEx(item, args);
                 _types[i] = new ImageType(_exes[i].Height, _exes[i].Width);
             }
@@ -305,7 +306,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 });
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -330,7 +331,7 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             return _types[iinfo];
         }
 
-        protected override Delegate GetGetterCore(IChannel ch, IRow input, int iinfo, out Action disposer)
+        protected override Delegate GetGetterCore(IChannel ch, Row input, int iinfo, out Action disposer)
         {
             Host.AssertValueOrNull(ch);
             Host.AssertValue(input);
@@ -340,18 +341,19 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
             var ex = _exes[iinfo];
             bool needScale = ex.Offset != 0 || ex.Scale != 1;
             disposer = null;
-            var sourceType = Schema.GetColumnType(Infos[iinfo].Source);
-            if (sourceType.ItemType == NumberType.R4 || sourceType.ItemType == NumberType.R8)
+            var sourceType = InputSchema[Infos[iinfo].Source].Type;
+            var sourceItemType = sourceType.GetItemType();
+            if (sourceItemType == NumberType.R4 || sourceItemType == NumberType.R8)
                 return GetterFromType<float>(input, iinfo, ex, needScale);
             else
-                if (sourceType.ItemType == NumberType.U1)
+                if (sourceItemType == NumberType.U1)
                 return GetterFromType<byte>(input, iinfo, ex, false);
             else
                 throw Contracts.Except("We only support float or byte arrays");
 
         }
 
-        private ValueGetter<Bitmap> GetterFromType<TValue>(IRow input, int iinfo, ColInfoEx ex, bool needScale) where TValue : IConvertible
+        private ValueGetter<Bitmap> GetterFromType<TValue>(Row input, int iinfo, ColInfoEx ex, bool needScale) where TValue : IConvertible
         {
             var getSrc = GetSrcGetter<VBuffer<TValue>>(input, iinfo);
             var src = default(VBuffer<TValue>);
@@ -364,22 +366,21 @@ namespace Microsoft.ML.Runtime.ImageAnalytics
                 (ref Bitmap dst) =>
                 {
                     getSrc(ref src);
-                    if (src.Count == 0)
+                    if (src.GetValues().Length == 0)
                     {
                         dst = null;
                         return;
                     }
                     VBuffer<TValue> dense = default;
                     src.CopyToDense(ref dense);
-                    var values = dense.Values;
+                    var values = dense.GetValues();
                     dst = new Bitmap(width, height);
                     dst.SetResolution(width, height);
                     int cpix = height * width;
-                    int planes = dense.Count / cpix;
                     int position = 0;
 
-                    for (int x = 0; x < width; x++)
-                        for (int y = 0; y < height; ++y)
+                    for (int y = 0; y < height; ++y)
+                        for (int x = 0; x < width; x++)
                         {
                             float red = 0;
                             float green = 0;

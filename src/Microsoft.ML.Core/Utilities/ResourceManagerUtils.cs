@@ -10,22 +10,23 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
     /// <summary>
     /// This class takes care of downloading resources needed by ML.NET components. Resources are located in
     /// a pre-defined location, that can be overridden by defining Environment variable <see cref="CustomResourcesUrlEnvVariable"/>.
     /// </summary>
-    public sealed class ResourceManagerUtils
+    [BestFriend]
+    internal sealed class ResourceManagerUtils
     {
         private static volatile ResourceManagerUtils _instance;
         public static ResourceManagerUtils Instance
         {
             get
             {
-                if (_instance == null)
-                    Interlocked.CompareExchange(ref _instance, new ResourceManagerUtils(), null);
-                return _instance;
+                return _instance ??
+                    Interlocked.CompareExchange(ref _instance, new ResourceManagerUtils(), null) ??
+                    _instance;
             }
         }
 
@@ -301,7 +302,9 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             return errorResult;
         }
 
+#pragma warning disable IDE1006
         [DllImport("libc", SetLastError = true)]
         private static extern int chmod(string pathname, int mode);
+#pragma warning restore IDE1006
     }
 }

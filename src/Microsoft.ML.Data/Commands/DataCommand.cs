@@ -6,18 +6,20 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// This holds useful base classes for commands that ingest a primary dataset and deal with associated model files.
     /// </summary>
-    public static class DataCommand
+    [BestFriend]
+    internal static class DataCommand
     {
         public abstract class ArgumentsBase
         {
@@ -52,11 +54,13 @@ namespace Microsoft.ML.Runtime.Data
                 HelpText = "Desired degree of parallelism in the data pipeline", ShortName = "n")]
             public int? Parallel;
 
-            [Argument(ArgumentType.Multiple, Visibility = ArgumentAttribute.VisibilityType.CmdLineOnly, HelpText = "Transform", ShortName = "xf", SignatureType = typeof(SignatureDataTransform))]
-            public KeyValuePair<string, IComponentFactory<IDataView, IDataTransform>>[] Transform;
+            [Argument(ArgumentType.Multiple, Visibility = ArgumentAttribute.VisibilityType.CmdLineOnly,
+                HelpText = "Transform", Name ="Transform", ShortName = "xf", SignatureType = typeof(SignatureDataTransform))]
+            public KeyValuePair<string, IComponentFactory<IDataView, IDataTransform>>[] Transforms;
         }
 
-        public abstract class ImplBase<TArgs> : ICommand
+        [BestFriend]
+        internal abstract class ImplBase<TArgs> : ICommand
             where TArgs : ArgumentsBase
         {
             protected readonly IHost Host;
@@ -131,9 +135,9 @@ namespace Microsoft.ML.Runtime.Data
             {
                 Contracts.AssertValue(pipe);
 
-                if (Args.Transform != null)
+                if (Args.Transforms != null)
                 {
-                    foreach (var transform in Args.Transform)
+                    foreach (var transform in Args.Transforms)
                         SendTelemetryComponent(pipe, transform.Value);
                 }
             }
@@ -157,15 +161,16 @@ namespace Microsoft.ML.Runtime.Data
                 Dictionary<string, double> averageMetric = new Dictionary<string, double>();
                 foreach (Dictionary<string, IDataView> mValue in metricValues)
                 {
-                    using (var cursor = mValue.First().Value.GetRowCursor(col => true))
+                    var data = mValue.First().Value;
+                    using (var cursor = data.GetRowCursorForAllColumns())
                     {
                         while (cursor.MoveNext())
                         {
-                            for (int currentIndex = 0; currentIndex < cursor.Schema.ColumnCount; currentIndex++)
+                            for (int currentIndex = 0; currentIndex < cursor.Schema.Count; currentIndex++)
                             {
-                                var nameOfMetric = "TLC_" + cursor.Schema.GetColumnName(currentIndex);
-                                var type = cursor.Schema.GetColumnType(currentIndex);
-                                if (type.IsNumber)
+                                var nameOfMetric = "TLC_" + cursor.Schema[currentIndex].Name;
+                                var type = cursor.Schema[currentIndex].Type;
+                                if (type is NumberType)
                                 {
                                     var getter = RowCursorUtils.GetGetterAs<double>(NumberType.R8, cursor, currentIndex);
                                     double metricValue = 0;
@@ -289,8 +294,8 @@ namespace Microsoft.ML.Runtime.Data
                             trainPipe = pipe;
                     }
 
-                    if (Utils.Size(Args.Transform) > 0)
-                        pipe = CompositeDataLoader.Create(Host, pipe, Args.Transform);
+                    if (Utils.Size(Args.Transforms) > 0)
+                        pipe = CompositeDataLoader.Create(Host, pipe, Args.Transforms);
 
                     // Next consider loading the training data's role mapped schema.
                     trainSchema = null;
@@ -326,7 +331,7 @@ namespace Microsoft.ML.Runtime.Data
 
             private IDataLoader CreateTransformChain(IDataLoader loader)
             {
-                return CompositeDataLoader.Create(Host, loader, Args.Transform);
+                return CompositeDataLoader.Create(Host, loader, Args.Transforms);
             }
 
             protected IDataLoader CreateRawLoader(
@@ -393,7 +398,8 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public static class LoaderUtils
+    [BestFriend]
+    internal static class LoaderUtils
     {
         /// <summary>
         /// Saves <paramref name="loader"/> to the specified <paramref name="file"/>.

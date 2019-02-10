@@ -5,7 +5,7 @@
 using System.IO;
 using System.IO.Compression;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
     public static class StreamExtensions
     {

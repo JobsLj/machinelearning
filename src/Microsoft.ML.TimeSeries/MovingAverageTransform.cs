@@ -4,20 +4,20 @@
 
 using System;
 using System.Linq;
-using System.Collections.Generic;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeriesProcessing;
 
 [assembly: LoadableClass(MovingAverageTransform.Summary, typeof(MovingAverageTransform), typeof(MovingAverageTransform.Arguments), typeof(SignatureDataTransform),
     "Moving Average Transform", MovingAverageTransform.LoaderSignature, "MoAv")]
 [assembly: LoadableClass(MovingAverageTransform.Summary, typeof(MovingAverageTransform), null, typeof(SignatureLoadDataTransform),
     "Moving Average Transform", MovingAverageTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// MovingAverageTransform is a weighted average of the values in
@@ -67,7 +67,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
         private readonly Single[] _weights;
 
         public MovingAverageTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(args.WindowSize + args.Lag - 1, args.WindowSize + args.Lag - 1, args.Source, args.Name, LoaderSignature, env, input)
+            : base(args.WindowSize + args.Lag - 1, args.WindowSize + args.Lag - 1, args.Name, args.Source, LoaderSignature, env, input)
         {
             Host.CheckUserArg(args.WindowSize >= 1, nameof(args.WindowSize), "Should be at least 1.");
             Host.CheckUserArg(args.Lag >= 0, nameof(args.Lag), "Should be positive.");
@@ -94,7 +94,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(_weights == null || Utils.Size(_weights) == WindowSize + 1 - _lag);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             Host.Assert(WindowSize >= 1);
@@ -107,10 +107,10 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // int: _lag
             // Single[]: _weights
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             ctx.Writer.Write(_lag);
             Host.Assert(_weights == null || Utils.Size(_weights) == WindowSize + 1 - _lag);
-            ctx.Writer.WriteFloatArray(_weights);
+            ctx.Writer.WriteSingleArray(_weights);
         }
 
         private static Single ComputeMovingAverageUniformInitialisation(FixedSizeQueue<Single> others, Single input, int lag,
@@ -143,7 +143,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             return nb == 0 ? Single.NaN : sumValues / nb;
         }
 
-        public static Single ComputeMovingAverageNonUniform(FixedSizeQueue<Single> others, Single input, Single[] weights, int lag)
+        internal static Single ComputeMovingAverageNonUniform(FixedSizeQueue<Single> others, Single input, Single[] weights, int lag)
         {
             Single sumWeights = 0;
             Single sumValues = 0;
@@ -178,7 +178,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
         /// NaN value: only NaN values in the sliding window or +/- Infinite
         /// Inifinite value: one infinite value in the sliding window (sign is no relevant)
         /// </summary>
-        public static Single ComputeMovingAverageUniform(FixedSizeQueue<Single> others, Single input, int lag,
+        internal static Single ComputeMovingAverageUniform(FixedSizeQueue<Single> others, Single input, int lag,
                                                          Single lastDropped, ref Single currentSum,
                                                          ref bool initUniformMovingAverage,
                                                          ref int nbNanValues)
@@ -262,7 +262,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // take part of the computation.
             private int _nbNanValues;
 
-            protected override void SetNaOutput(ref Single output)
+            private protected override void SetNaOutput(ref Single output)
             {
                 output = Single.NaN;
             }
@@ -274,7 +274,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             /// <param name="windowedBuffer"></param>
             /// <param name="iteration"></param>
             /// <param name="output"></param>
-            protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single output)
+            private protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref Single output)
             {
                 if (_weights == null)
                     output = ComputeMovingAverageUniform(windowedBuffer, input, _lag, _lastDroppedValue, ref _currentSum, ref _initUniformMovingAverage, ref _nbNanValues);
@@ -283,14 +283,14 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 _lastDroppedValue = windowedBuffer[0];
             }
 
-            protected override void InitializeStateCore()
+            private protected override void InitializeStateCore()
             {
                 _weights = ((MovingAverageTransform)ParentTransform)._weights;
                 _lag = ((MovingAverageTransform)ParentTransform)._lag;
                 _initUniformMovingAverage = true;
             }
 
-            protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
+            private protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
             {
                 // This method is empty because there is no need for parameter learning from the initial windowed buffer for this transform.
             }

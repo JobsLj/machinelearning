@@ -3,9 +3,9 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Text;
+using Microsoft.Data.DataView;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// Data type specifier.
@@ -52,7 +52,8 @@ namespace Microsoft.ML.Runtime.Data
     /// <summary>
     /// Extension methods related to the DataKind enum.
     /// </summary>
-    public static class DataKindExtensions
+    [BestFriend]
+    internal static class DataKindExtensions
     {
         public const DataKind KindMin = DataKind.I1;
         public const DataKind KindLim = DataKind.U16 + 1;
@@ -100,6 +101,32 @@ namespace Microsoft.ML.Runtime.Data
                 case DataKind.U8:
                     return ulong.MaxValue;
             }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// For integer Types, this returns the maximum legal value. For un-supported Types,
+        /// it returns zero.
+        /// </summary>
+        public static ulong ToMaxInt(this Type type)
+        {
+            if (type == typeof(sbyte))
+                return (ulong)sbyte.MaxValue;
+            else if (type == typeof(byte))
+                return byte.MaxValue;
+            else if (type == typeof(short))
+                return (ulong)short.MaxValue;
+            else if (type == typeof(ushort))
+                return ushort.MaxValue;
+            else if (type == typeof(int))
+                return int.MaxValue;
+            else if (type == typeof(uint))
+                return uint.MaxValue;
+            else if (type == typeof(long))
+                return long.MaxValue;
+            else if (type == typeof(ulong))
+                return ulong.MaxValue;
 
             return 0;
         }
@@ -171,7 +198,7 @@ namespace Microsoft.ML.Runtime.Data
                 case DataKind.DZ:
                     return typeof(DateTimeOffset);
                 case DataKind.UG:
-                    return typeof(UInt128);
+                    return typeof(RowId);
             }
 
             return null;
@@ -215,7 +242,7 @@ namespace Microsoft.ML.Runtime.Data
                 kind = DataKind.DT;
             else if (type == typeof(DateTimeOffset))
                 kind = DataKind.DZ;
-            else if (type == typeof(UInt128))
+            else if (type == typeof(RowId))
                 kind = DataKind.UG;
             else
             {

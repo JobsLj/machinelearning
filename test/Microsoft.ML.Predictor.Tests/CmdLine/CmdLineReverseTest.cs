@@ -2,13 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
 using System.Reflection;
+using Microsoft.ML.CommandLine;
 using Xunit;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public class CmdLineReverseTests
     {
@@ -19,7 +17,7 @@ namespace Microsoft.ML.Runtime.RunTests
         [TestCategory("Cmd Parsing")]
         public void ArgumentParseTest()
         {
-            var env = new ConsoleEnvironment(seed: 42);
+            var env = new MLContext(seed: 42);
             var innerArg1 = new SimpleArg()
             {
                 required = -2,

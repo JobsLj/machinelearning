@@ -3,20 +3,21 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.TimeSeriesProcessing;
 
 [assembly: LoadableClass(PercentileThresholdTransform.Summary, typeof(PercentileThresholdTransform), typeof(PercentileThresholdTransform.Arguments), typeof(SignatureDataTransform),
     PercentileThresholdTransform.UserName, PercentileThresholdTransform.LoaderSignature, PercentileThresholdTransform.ShortName)]
 [assembly: LoadableClass(PercentileThresholdTransform.Summary, typeof(PercentileThresholdTransform), null, typeof(SignatureLoadDataTransform),
     PercentileThresholdTransform.UserName, PercentileThresholdTransform.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.TimeSeriesProcessing
+namespace Microsoft.ML.TimeSeriesProcessing
 {
     /// <summary>
     /// PercentileThresholdTransform is a sequential transform that decides whether the current value of the time-series belongs to the 'percentile' % of the top values in
@@ -66,7 +67,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
         private readonly Double _percentile;
 
         public PercentileThresholdTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(args.WindowSize, args.WindowSize, args.Source, args.Name, LoaderSignature, env, input)
+            : base(args.WindowSize, args.WindowSize, args.Name, args.Source, LoaderSignature, env, input)
         {
             Host.CheckUserArg(args.WindowSize >= 1, nameof(args.WindowSize), "The size of the sliding window should be at least 1.");
             Host.CheckUserArg(MinPercentile <= args.Percentile && args.Percentile <= MaxPercentile, nameof(args.Percentile), "The percentile value should be in [0, 100].");
@@ -85,7 +86,7 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             Host.CheckDecode(MinPercentile <= _percentile && _percentile <= MaxPercentile);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             Host.Assert(MinPercentile <= _percentile && _percentile <= MaxPercentile);
@@ -97,11 +98,11 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             // <base>
             // Double: _percentile
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             ctx.Writer.Write(_percentile);
         }
 
-        public static void CountGreaterOrEqualValues(FixedSizeQueue<Single> others, Single theValue, out int greaterVals, out int equalVals, out int totalVals)
+        internal static void CountGreaterOrEqualValues(FixedSizeQueue<Single> others, Single theValue, out int greaterVals, out int equalVals, out int totalVals)
         {
             // The current linear algorithm for counting greater and equal elements takes O(n),
             // but it can be improved to O(log n) if a separate Binary Search Tree data structure is used.
@@ -130,12 +131,12 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
             /// </summary>
             private PercentileThresholdTransform _parent;
 
-            protected override void SetNaOutput(ref bool dst)
+            private protected override void SetNaOutput(ref bool dst)
             {
                 dst = false;
             }
 
-            protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref bool dst)
+            private protected override void TransformCore(ref Single input, FixedSizeQueue<Single> windowedBuffer, long iteration, ref bool dst)
             {
                 int greaterCount;
                 int equalCount;
@@ -145,12 +146,12 @@ namespace Microsoft.ML.Runtime.TimeSeriesProcessing
                 dst = greaterCount < (int)(_parent._percentile * totalCount / 100);
             }
 
-            protected override void InitializeStateCore()
+            private protected override void InitializeStateCore()
             {
                 _parent = (PercentileThresholdTransform)ParentTransform;
             }
 
-            protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
+            private protected override void LearnStateFromDataCore(FixedSizeQueue<Single> data)
             {
                 // This method is empty because there is no need for parameter learning from the initial windowed buffer for this transform.
             }

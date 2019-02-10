@@ -7,34 +7,38 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Core.Tests.UnitTests;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Ensemble.EntryPoints;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.EntryPoints.JsonUtils;
-using Microsoft.ML.Runtime.FastTree;
-using Microsoft.ML.Runtime.ImageAnalytics;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.LightGBM;
-using Microsoft.ML.Runtime.Model.Onnx;
-using Microsoft.ML.Runtime.PCA;
-using Microsoft.ML.Runtime.PipelineInference;
-using Microsoft.ML.Runtime.SymSgd;
-using Microsoft.ML.Runtime.TextAnalytics;
-using Microsoft.ML.Runtime.TimeSeriesProcessing;
+using Microsoft.Data.DataView;
+using Microsoft.ML.Core.Data;
+using Microsoft.ML.Core.Tests.UnitTests;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Ensemble;
+using Microsoft.ML.Ensemble.OutputCombiners;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.EntryPoints.JsonUtils;
+using Microsoft.ML.ImageAnalytics;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.LightGBM;
+using Microsoft.ML.Model.Onnx;
+using Microsoft.ML.TimeSeriesProcessing;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Trainers.FastTree;
+using Microsoft.ML.Trainers.HalLearners;
+using Microsoft.ML.Trainers.PCA;
 using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.Categorical;
+using Microsoft.ML.Transforms.Conversions;
+using Microsoft.ML.Transforms.Normalizers;
+using Microsoft.ML.Transforms.Projections;
+using Microsoft.ML.Transforms.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public partial class TestEntryPoints : CoreBaseTestClass
     {
@@ -47,11 +51,11 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var dataPath = GetDataPath("breast-cancer.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
-            return ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            return EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Label", DataKind.R4, 0),
                         new TextLoader.Column("Features", DataKind.R4,
@@ -67,12 +71,12 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var dataPath = GetDataPath("breast-cancer.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
-            return ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            return EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
                     HasHeader = true,
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Label", type: null, 0),
                         new TextLoader.Column("F1", DataKind.Text, 1),
@@ -103,7 +107,7 @@ namespace Microsoft.ML.Runtime.RunTests
         private static int CountRows(IDataView dataView)
         {
             int totalRows = 0;
-            using (var cursor = dataView.GetRowCursor(col => false))
+            using (var cursor = dataView.GetRowCursor())
             {
                 while (cursor.MoveNext())
                     totalRows++;
@@ -125,8 +129,8 @@ namespace Microsoft.ML.Runtime.RunTests
             expected = Env.CreateTransform("KeyToVector{col=F1}", expected);
             expected = Env.CreateTransform("Concat{col=Features:F1,F2,Rest}", expected);
 
-            expected = Env.CreateTransform("ChooseColumns{col=Features}", expected);
-            result = Env.CreateTransform("ChooseColumns{col=Features}", result);
+            expected = Env.CreateTransform("SelectColumns{keepcol=Features hidden=-}", expected);
+            result = Env.CreateTransform("SelectColumns{keepcol=Features hidden=-}", result);
             CheckSameValues(result, expected);
             Done();
         }
@@ -137,7 +141,7 @@ namespace Microsoft.ML.Runtime.RunTests
             var dataView = GetBreastCancerDataviewWithTextColumns();
             dataView = Env.CreateTransform("Term{col=F1}", dataView);
             var trainData = FeatureCombiner.PrepareFeatures(Env, new FeatureCombiner.FeatureCombinerInput() { Data = dataView, Features = new[] { "F1", "F2", "Rest" } });
-            var lrModel = LogisticRegression.TrainBinary(Env, new LogisticRegression.Arguments { TrainingData = trainData.OutputData }).PredictorModel;
+            var lrModel = LogisticRegression.TrainBinary(Env, new LogisticRegression.Options { TrainingData = trainData.OutputData }).PredictorModel;
             var model = ModelOperations.CombineTwoModels(Env, new ModelOperations.SimplePredictorModelInput() { TransformModel = trainData.Model, PredictorModel = lrModel }).PredictorModel;
 
             var scored1 = ScoreModel.Score(Env, new ScoreModel.Input() { Data = dataView, PredictorModel = model }).ScoredData;
@@ -146,7 +150,7 @@ namespace Microsoft.ML.Runtime.RunTests
             var scored2 = ScoreModel.Score(Env, new ScoreModel.Input() { Data = dataView, PredictorModel = lrModel.Apply(Env, trainData.Model) }).ScoredData;
             scored2 = ScoreModel.SelectColumns(Env, new ScoreModel.ScoreColumnSelectorInput() { Data = scored2, ExtraColumns = new[] { "Label" } }).OutputData;
 
-            Assert.Equal(4, scored1.Schema.ColumnCount);
+            Assert.Equal(4, scored1.Schema.Count);
             CheckSameValues(scored1, scored2);
             Done();
         }
@@ -244,7 +248,7 @@ namespace Microsoft.ML.Runtime.RunTests
 #endif
         }
 
-        [Fact(Skip = "Execute this test if you want to regenerate ep-list and _manifest.json")]
+        [Fact(Skip = "Execute this test if you want to regenerate the core_manifest and core_ep_list files")]
         public void RegenerateEntryPointCatalog()
         {
             var (epListContents, jObj) = BuildManifests();
@@ -342,13 +346,13 @@ namespace Microsoft.ML.Runtime.RunTests
 
         private (IEnumerable<string> epListContents, JObject manifest) BuildManifests()
         {
-            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryPredictor).Assembly);
-            Env.ComponentCatalog.RegisterAssembly(typeof(TensorFlowTransform).Assembly);
-            Env.ComponentCatalog.RegisterAssembly(typeof(ImageLoaderTransform).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryModelParameters).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(TensorFlowTransformer).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(ImageLoadingTransformer).Assembly);
             Env.ComponentCatalog.RegisterAssembly(typeof(SymSgdClassificationTrainer).Assembly);
-            Env.ComponentCatalog.RegisterAssembly(typeof(AutoInference).Assembly);
             Env.ComponentCatalog.RegisterAssembly(typeof(SaveOnnxCommand).Assembly);
-            Env.ComponentCatalog.RegisterAssembly(typeof(TimeSeriesProcessing.TimeSeriesProcessing).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(TimeSeriesProcessingEntryPoints).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(ParquetLoader).Assembly);
 
             var catalog = Env.ComponentCatalog;
 
@@ -382,12 +386,12 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var catalog = Env.ComponentCatalog;
 
-            InputBuilder ib1 = new InputBuilder(Env, typeof(LogisticRegression.Arguments), catalog);
+            InputBuilder ib1 = new InputBuilder(Env, typeof(LogisticRegression.Options), catalog);
             // Ensure that InputBuilder unwraps the Optional<string> correctly.
             var weightType = ib1.GetFieldTypeOrNull("WeightColumn");
             Assert.True(weightType.Equals(typeof(string)));
 
-            var instance = ib1.GetInstance() as LogisticRegression.Arguments;
+            var instance = ib1.GetInstance() as LogisticRegression.Options;
             Assert.True(!instance.WeightColumn.IsExplicit);
             Assert.True(instance.WeightColumn.Value == DefaultColumnNames.Weight);
 
@@ -433,35 +437,17 @@ namespace Microsoft.ML.Runtime.RunTests
         }
 
         [Fact]
-        public void EntryPointInputArgsChecks()
-        {
-            var input = new DropColumnsTransform.KeepArguments();
-            try
-            {
-                EntryPointUtils.CheckInputArgs(Env, input);
-                Assert.False(true);
-            }
-            catch
-            {
-            }
-
-            input.Data = new EmptyDataView(Env, new Schema(new[] { new Schema.Column("ColA", NumberType.R4, null) }));
-            input.Column = new string[0];
-            EntryPointUtils.CheckInputArgs(Env, input);
-        }
-
-        [Fact]
         public void EntryPointCreateEnsemble()
         {
             var dataView = GetBreastCancerDataView();
             const int nModels = 5;
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = nModels + 1 });
-            var predictorModels = new IPredictorModel[nModels];
+            var predictorModels = new PredictorModel[nModels];
             var individualScores = new IDataView[nModels];
             for (int i = 0; i < nModels; i++)
             {
                 var data = splitOutput.TrainData[i];
-                var lrInput = new LogisticRegression.Arguments
+                var lrInput = new LogisticRegression.Options
                 {
                     TrainingData = data,
                     L1Weight = (Single)0.1 * i,
@@ -473,22 +459,12 @@ namespace Microsoft.ML.Runtime.RunTests
                     ScoreModel.Score(Env,
                         new ScoreModel.Input { Data = splitOutput.TestData[nModels], PredictorModel = predictorModels[i] })
                         .ScoredData;
+                individualScores[i] = new ColumnCopyingTransformer(Env, (
+                    (MetadataUtils.Const.ScoreValueKind.Score + i).ToString(),
+                     MetadataUtils.Const.ScoreValueKind.Score)
+                    ).Transform(individualScores[i]);
 
-                individualScores[i] = CopyColumnsTransform.Create(Env,
-                    new CopyColumnsTransform.Arguments()
-                    {
-                        Column = new[]
-                        {
-                            new CopyColumnsTransform.Column()
-                            {
-                                Name = MetadataUtils.Const.ScoreValueKind.Score + i,
-                                Source = MetadataUtils.Const.ScoreValueKind.Score
-                            },
-                        }
-                    }, individualScores[i]);
-                individualScores[i] = new DropColumnsTransform(Env,
-                    new DropColumnsTransform.Arguments() { Column = new[] { MetadataUtils.Const.ScoreValueKind.Score } },
-                    individualScores[i]);
+                individualScores[i] = ColumnSelectingTransformer.CreateDrop(Env, individualScores[i], MetadataUtils.Const.ScoreValueKind.Score);
             }
 
             var avgEnsembleInput = new EnsembleCreator.ClassifierInput { Models = predictorModels, ModelCombiner = EnsembleCreator.ClassifierCombiner.Average };
@@ -513,28 +489,28 @@ namespace Microsoft.ML.Runtime.RunTests
 
             var avgComb = new Average(Env).GetCombiner();
             var medComb = new Median(Env).GetCombiner();
-            using (var curs1 = avgScored.GetRowCursor(col => true))
-            using (var curs2 = medScored.GetRowCursor(col => true))
-            using (var curs3 = regScored.GetRowCursor(col => true))
-            using (var curs4 = zippedScores.GetRowCursor(col => true))
+            using (var curs1 = avgScored.GetRowCursorForAllColumns())
+            using (var curs2 = medScored.GetRowCursorForAllColumns())
+            using (var curs3 = regScored.GetRowCursorForAllColumns())
+            using (var curs4 = zippedScores.GetRowCursorForAllColumns())
             {
-                var found = curs1.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out int scoreCol);
-                Assert.True(found);
-                var avgScoreGetter = curs1.GetGetter<Single>(scoreCol);
+                var scoreColumn = curs1.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var avgScoreGetter = curs1.GetGetter<Single>(scoreColumn.Value.Index);
 
-                found = curs2.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreCol);
-                Assert.True(found);
-                var medScoreGetter = curs2.GetGetter<Single>(scoreCol);
+                scoreColumn = curs2.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var medScoreGetter = curs2.GetGetter<Single>(scoreColumn.Value.Index);
 
-                found = curs3.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreCol);
-                Assert.True(found);
-                var regScoreGetter = curs3.GetGetter<Single>(scoreCol);
+                scoreColumn = curs3.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var regScoreGetter = curs3.GetGetter<Single>(scoreColumn.Value.Index);
 
                 var individualScoreGetters = new ValueGetter<Single>[nModels];
                 for (int i = 0; i < nModels; i++)
                 {
-                    curs4.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score + i, out scoreCol);
-                    individualScoreGetters[i] = curs4.GetGetter<Single>(scoreCol);
+                    scoreColumn = curs4.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score + i);
+                    individualScoreGetters[i] = curs4.GetGetter<Single>(scoreColumn.Value.Index);
                 }
 
                 var scoreBuffer = new Single[nModels];
@@ -609,7 +585,7 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model1");
+            var model = runner.GetOutput<PredictorModel>("model1");
             Assert.NotNull(model);
         }
 
@@ -727,7 +703,7 @@ namespace Microsoft.ML.Runtime.RunTests
 
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = 3 });
 
-            var lrModel = LogisticRegression.TrainBinary(Env, new LogisticRegression.Arguments { TrainingData = splitOutput.TestData[0] }).PredictorModel;
+            var lrModel = LogisticRegression.TrainBinary(Env, new LogisticRegression.Options { TrainingData = splitOutput.TestData[0] }).PredictorModel;
             var calibratedLrModel = Calibrate.FixedPlatt(Env,
                 new Calibrate.FixedPlattInput { Data = splitOutput.TestData[1], UncalibratedPredictorModel = lrModel }).PredictorModel;
 
@@ -737,7 +713,7 @@ namespace Microsoft.ML.Runtime.RunTests
             var scored2 = ScoreModel.Score(Env, new ScoreModel.Input() { Data = splitOutput.TestData[2], PredictorModel = calibratedLrModel }).ScoredData;
             scored2 = ScoreModel.SelectColumns(Env, new ScoreModel.ScoreColumnSelectorInput() { Data = scored2, ExtraColumns = new[] { "Label" } }).OutputData;
 
-            Assert.Equal(4, scored1.Schema.ColumnCount);
+            Assert.Equal(4, scored1.Schema.Count);
             CheckSameValues(scored1, scored2);
 
             var input = new Calibrate.NoArgumentsInput() { Data = splitOutput.TestData[1], UncalibratedPredictorModel = lrModel };
@@ -748,7 +724,7 @@ namespace Microsoft.ML.Runtime.RunTests
             // This tests that the SchemaBindableCalibratedPredictor doesn't get confused if its sub-predictor is already calibrated.
             var fastForest = new FastForestClassification(Env, "Label", "Features");
             var rmd = new RoleMappedData(splitOutput.TrainData[0], "Label", "Features");
-            var ffModel = new PredictorModel(Env, rmd, splitOutput.TrainData[0], fastForest.Train(rmd));
+            var ffModel = new PredictorModelImpl(Env, rmd, splitOutput.TrainData[0], fastForest.Train(rmd));
             var calibratedFfModel = Calibrate.Platt(Env,
                 new Calibrate.NoArgumentsInput() { Data = splitOutput.TestData[0], UncalibratedPredictorModel = ffModel }).PredictorModel;
             var twiceCalibratedFfModel = Calibrate.Platt(Env,
@@ -756,42 +732,26 @@ namespace Microsoft.ML.Runtime.RunTests
             var scoredFf = ScoreModel.Score(Env, new ScoreModel.Input() { Data = splitOutput.TestData[2], PredictorModel = twiceCalibratedFfModel }).ScoredData;
         }
 
-
         [Fact]
         public void EntryPointPipelineEnsemble()
         {
             var dataView = GetBreastCancerDataView();
             const int nModels = 5;
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = nModels + 1 });
-            var predictorModels = new IPredictorModel[nModels];
+            var predictorModels = new PredictorModel[nModels];
             var individualScores = new IDataView[nModels];
             for (int i = 0; i < nModels; i++)
             {
                 var data = splitOutput.TrainData[i];
-                data = new RffEstimator(Env, new[] {
-                    new RffTransform.ColumnInfo("Features", "Features1", 10, false),
-                    new RffTransform.ColumnInfo("Features", "Features2", 10, false),
+                data = new RandomFourierFeaturizingEstimator(Env, new[] {
+                    new RandomFourierFeaturizingEstimator.ColumnInfo("Features1", 10, false, "Features"),
+                    new RandomFourierFeaturizingEstimator.ColumnInfo("Features2", 10, false, "Features"),
                 }).Fit(data).Transform(data);
 
-                data = ConcatTransform.Create(Env, new ConcatTransform.Arguments()
-                {
-                    Column = new[] { new ConcatTransform.Column() { Name = "Features", Source = new[] { "Features1", "Features2" } } }
-                }, data);
+                data = new ColumnConcatenatingTransformer(Env, "Features", new[] { "Features1", "Features2" }).Transform(data);
+                data = new ValueToKeyMappingEstimator(Env, "Label", "Label", sort: ValueToKeyMappingEstimator.SortOrder.Value).Fit(data).Transform(data);
 
-                data = TermTransform.Create(Env, new TermTransform.Arguments()
-                {
-                    Column = new[]
-                    {
-                        new TermTransform.Column()
-                        {
-                            Name = "Label",
-                            Source = "Label",
-                            Sort = TermTransform.SortOrder.Value
-                        }
-                    }
-                }, data);
-
-                var lrInput = new LogisticRegression.Arguments
+                var lrInput = new LogisticRegression.Options
                 {
                     TrainingData = data,
                     L1Weight = (Single)0.1 * i,
@@ -799,7 +759,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     NormalizeFeatures = NormalizeOption.Yes
                 };
                 predictorModels[i] = LogisticRegression.TrainBinary(Env, lrInput).PredictorModel;
-                var transformModel = new TransformModel(Env, data, splitOutput.TrainData[i]);
+                var transformModel = new TransformModelImpl(Env, data, splitOutput.TrainData[i]);
 
                 predictorModels[i] = ModelOperations.CombineTwoModels(Env,
                     new ModelOperations.SimplePredictorModelInput()
@@ -814,7 +774,7 @@ namespace Microsoft.ML.Runtime.RunTests
             var binaryEnsembleModel = EnsembleCreator.CreateBinaryPipelineEnsemble(Env,
                 new EnsembleCreator.PipelineClassifierInput()
                 {
-                    ModelCombiner = EntryPoints.EnsembleCreator.ClassifierCombiner.Average,
+                    ModelCombiner = EnsembleCreator.ClassifierCombiner.Average,
                     Models = predictorModels
                 }).PredictorModel;
             var binaryEnsembleCalibrated = Calibrate.Platt(Env,
@@ -836,10 +796,10 @@ namespace Microsoft.ML.Runtime.RunTests
                     PredictorModel = binaryEnsembleCalibrated
                 }).ScoredData;
 
-            var regressionEnsembleModel = EntryPoints.EnsembleCreator.CreateRegressionPipelineEnsemble(Env,
-                new EntryPoints.EnsembleCreator.PipelineRegressionInput()
+            var regressionEnsembleModel = EnsembleCreator.CreateRegressionPipelineEnsemble(Env,
+                new EnsembleCreator.PipelineRegressionInput()
                 {
-                    ModelCombiner = EntryPoints.EnsembleCreator.ScoreCombiner.Average,
+                    ModelCombiner = EnsembleCreator.ScoreCombiner.Average,
                     Models = predictorModels
                 }).PredictorModel;
             var regressionScored = ScoreModel.Score(Env,
@@ -849,8 +809,8 @@ namespace Microsoft.ML.Runtime.RunTests
                     PredictorModel = regressionEnsembleModel
                 }).ScoredData;
 
-            var anomalyEnsembleModel = EntryPoints.EnsembleCreator.CreateAnomalyPipelineEnsemble(Env,
-                new EntryPoints.EnsembleCreator.PipelineAnomalyInput()
+            var anomalyEnsembleModel = EnsembleCreator.CreateAnomalyPipelineEnsemble(Env,
+                new EnsembleCreator.PipelineAnomalyInput()
                 {
                     ModelCombiner = EnsembleCreator.ScoreCombiner.Average,
                     Models = predictorModels
@@ -863,28 +823,28 @@ namespace Microsoft.ML.Runtime.RunTests
                 }).ScoredData;
 
             // Make sure the scorers have the correct types.
-            var hasScoreCol = binaryScored.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out int scoreIndex);
-            Assert.True(hasScoreCol, "Data scored with binary ensemble does not have a score column");
-            var type = binaryScored.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex);
-            Assert.True(type != null && type.IsText, "Binary ensemble scored data does not have correct type of metadata.");
+            var scoreCol = binaryScored.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+            Assert.True(scoreCol.HasValue, "Data scored with binary ensemble does not have a score column");
+            var type = binaryScored.Schema[scoreCol.Value.Index].Metadata.Schema.GetColumnOrNull(MetadataUtils.Kinds.ScoreColumnKind)?.Type;
+            Assert.True(type is TextType, "Binary ensemble scored data does not have correct type of metadata.");
             var kind = default(ReadOnlyMemory<char>);
-            binaryScored.Schema.GetMetadata(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex, ref kind);
+            binaryScored.Schema[scoreCol.Value.Index].Metadata.GetValue(MetadataUtils.Kinds.ScoreColumnKind, ref kind);
             Assert.True(ReadOnlyMemoryUtils.EqualsStr(MetadataUtils.Const.ScoreColumnKind.BinaryClassification, kind),
                 $"Binary ensemble scored data column type should be '{MetadataUtils.Const.ScoreColumnKind.BinaryClassification}', but is instead '{kind}'");
 
-            hasScoreCol = regressionScored.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreIndex);
-            Assert.True(hasScoreCol, "Data scored with regression ensemble does not have a score column");
-            type = regressionScored.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex);
-            Assert.True(type != null && type.IsText, "Regression ensemble scored data does not have correct type of metadata.");
-            regressionScored.Schema.GetMetadata(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex, ref kind);
+            scoreCol = regressionScored.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+            Assert.True(scoreCol.HasValue, "Data scored with regression ensemble does not have a score column");
+            type = regressionScored.Schema[scoreCol.Value.Index].Metadata.Schema[MetadataUtils.Kinds.ScoreColumnKind].Type;
+            Assert.True(type is TextType, "Regression ensemble scored data does not have correct type of metadata.");
+            regressionScored.Schema[scoreCol.Value.Index].Metadata.GetValue(MetadataUtils.Kinds.ScoreColumnKind, ref kind);
             Assert.True(ReadOnlyMemoryUtils.EqualsStr(MetadataUtils.Const.ScoreColumnKind.Regression, kind),
                 $"Regression ensemble scored data column type should be '{MetadataUtils.Const.ScoreColumnKind.Regression}', but is instead '{kind}'");
 
-            hasScoreCol = anomalyScored.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out scoreIndex);
-            Assert.True(hasScoreCol, "Data scored with anomaly detection ensemble does not have a score column");
-            type = anomalyScored.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex);
-            Assert.True(type != null && type.IsText, "Anomaly detection ensemble scored data does not have correct type of metadata.");
-            anomalyScored.Schema.GetMetadata(MetadataUtils.Kinds.ScoreColumnKind, scoreIndex, ref kind);
+            scoreCol = anomalyScored.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+            Assert.True(scoreCol.HasValue, "Data scored with anomaly detection ensemble does not have a score column");
+            type = anomalyScored.Schema[scoreCol.Value.Index].Metadata.Schema[MetadataUtils.Kinds.ScoreColumnKind].Type;
+            Assert.True(type is TextType, "Anomaly detection ensemble scored data does not have correct type of metadata.");
+            anomalyScored.Schema[scoreCol.Value.Index].Metadata.GetValue(MetadataUtils.Kinds.ScoreColumnKind, ref kind);
             Assert.True(ReadOnlyMemoryUtils.EqualsStr(MetadataUtils.Const.ScoreColumnKind.AnomalyDetection, kind),
                 $"Anomaly detection ensemble scored data column type should be '{MetadataUtils.Const.ScoreColumnKind.AnomalyDetection}', but is instead '{kind}'");
 
@@ -893,10 +853,10 @@ namespace Microsoft.ML.Runtime.RunTests
             using (var strm = file.CreateWriteStream())
                 regressionEnsembleModel.Save(Env, strm);
 
-            IPredictorModel loadedFromSaved;
+            PredictorModel loadedFromSaved;
             using (var file = Env.OpenInputFile(modelPath))
             using (var strm = file.OpenReadStream())
-                loadedFromSaved = new PredictorModel(Env, strm);
+                loadedFromSaved = new PredictorModelImpl(Env, strm);
 
             var scoredFromSaved = ScoreModel.Score(Env,
                 new ScoreModel.Input()
@@ -905,47 +865,47 @@ namespace Microsoft.ML.Runtime.RunTests
                     PredictorModel = loadedFromSaved
                 }).ScoredData;
 
-            using (var cursReg = regressionScored.GetRowCursor(col => true))
-            using (var cursBin = binaryScored.GetRowCursor(col => true))
-            using (var cursBinCali = binaryScoredCalibrated.GetRowCursor(col => true))
-            using (var cursAnom = anomalyScored.GetRowCursor(col => true))
-            using (var curs0 = individualScores[0].GetRowCursor(col => true))
-            using (var curs1 = individualScores[1].GetRowCursor(col => true))
-            using (var curs2 = individualScores[2].GetRowCursor(col => true))
-            using (var curs3 = individualScores[3].GetRowCursor(col => true))
-            using (var curs4 = individualScores[4].GetRowCursor(col => true))
-            using (var cursSaved = scoredFromSaved.GetRowCursor(col => true))
+            using (var cursReg = regressionScored.GetRowCursorForAllColumns())
+            using (var cursBin = binaryScored.GetRowCursorForAllColumns())
+            using (var cursBinCali = binaryScoredCalibrated.GetRowCursorForAllColumns())
+            using (var cursAnom = anomalyScored.GetRowCursorForAllColumns())
+            using (var curs0 = individualScores[0].GetRowCursorForAllColumns())
+            using (var curs1 = individualScores[1].GetRowCursorForAllColumns())
+            using (var curs2 = individualScores[2].GetRowCursorForAllColumns())
+            using (var curs3 = individualScores[3].GetRowCursorForAllColumns())
+            using (var curs4 = individualScores[4].GetRowCursorForAllColumns())
+            using (var cursSaved = scoredFromSaved.GetRowCursorForAllColumns())
             {
-                var good = curs0.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out int col);
-                Assert.True(good);
-                var getter0 = curs0.GetGetter<Single>(col);
-                good = curs1.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter1 = curs1.GetGetter<Single>(col);
-                good = curs2.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter2 = curs2.GetGetter<Single>(col);
-                good = curs3.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter3 = curs3.GetGetter<Single>(col);
-                good = curs4.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter4 = curs4.GetGetter<Single>(col);
-                good = cursReg.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterReg = cursReg.GetGetter<Single>(col);
-                good = cursBin.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterBin = cursBin.GetGetter<Single>(col);
-                good = cursBinCali.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterBinCali = cursBinCali.GetGetter<Single>(col);
-                good = cursSaved.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterSaved = cursSaved.GetGetter<Single>(col);
-                good = cursAnom.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterAnom = cursAnom.GetGetter<Single>(col);
+                var scoreColumn = curs0.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter0 = curs0.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs1.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter1 = curs1.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs2.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter2 = curs2.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs3.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter3 = curs3.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs4.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter4 = curs4.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursReg.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterReg = cursReg.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursBin.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterBin = cursBin.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursBinCali.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterBinCali = cursBinCali.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursSaved.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterSaved = cursSaved.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursAnom.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterAnom = cursAnom.GetGetter<Single>(scoreColumn.Value.Index);
 
                 var c = new Average(Env).GetCombiner();
                 while (cursReg.MoveNext())
@@ -977,7 +937,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     getterAnom(ref scoreAnom);
                     Assert.True(Single.IsNaN(scoreBin) && Single.IsNaN(score) || scoreBin == score);
                     Assert.True(Single.IsNaN(scoreBinCali) && Single.IsNaN(score) || scoreBinCali == score);
-                    Assert.True(Single.IsNaN(scoreSaved) && Single.IsNaN(score) || scoreSaved == score);
+                    Assert.True(Single.IsNaN(scoreSaved) && Single.IsNaN(score) || CompareNumbersWithTolerance(scoreSaved, score, null, 5));
                     Assert.True(Single.IsNaN(scoreAnom) && Single.IsNaN(score) || scoreAnom == score);
 
                     Single avg = 0;
@@ -1002,12 +962,12 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var dataPath = GetDataPath("lm.sample.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
-            var dataView = ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            var dataView = EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
                     HasHeader = true,
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Label", DataKind.TX, 0),
                         new TextLoader.Column("Text", DataKind.TX, 3)
@@ -1018,7 +978,7 @@ namespace Microsoft.ML.Runtime.RunTests
             }).Data;
 
             ValueMapper<ReadOnlyMemory<char>, bool> labelToBinary =
-                (ref ReadOnlyMemory<char> src, ref bool dst) =>
+                (in ReadOnlyMemory<char> src, ref bool dst) =>
                 {
                     if (ReadOnlyMemoryUtils.EqualsStr("Sport", src))
                         dst = true;
@@ -1030,31 +990,29 @@ namespace Microsoft.ML.Runtime.RunTests
 
             const int nModels = 5;
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = nModels + 1 });
-            var predictorModels = new IPredictorModel[nModels];
+            var predictorModels = new PredictorModel[nModels];
             var individualScores = new IDataView[nModels];
             for (int i = 0; i < nModels; i++)
             {
                 var data = splitOutput.TrainData[i];
                 if (i % 2 == 0)
                 {
-                    data = TextTransform.Create(Env,
-                        new TextTransform.Arguments()
-                        {
-                            Column = new TextTransform.Column() { Name = "Features", Source = new[] { "Text" } },
-                            StopWordsRemover = new PredefinedStopWordsRemoverFactory()
-                        }, data);
+                    data = new TextFeaturizingEstimator(Env, "Features", new List<string> { "Text" }, 
+                        new TextFeaturizingEstimator.Options { 
+                            UseStopRemover = true,
+                        }).Fit(data).Transform(data);
                 }
                 else
                 {
-                    data = WordHashBagTransform.Create(Env,
-                        new WordHashBagTransform.Arguments()
+                    data = WordHashBagProducingTransformer.Create(Env,
+                        new WordHashBagProducingTransformer.Options()
                         {
-                            Column =
-                                new[] { new WordHashBagTransform.Column() { Name = "Features", Source = new[] { "Text" } }, }
+                            Columns =
+                                new[] { new WordHashBagProducingTransformer.Column() { Name = "Features", Source = new[] { "Text" } }, }
                         },
                         data);
                 }
-                var lrInput = new LogisticRegression.Arguments
+                var lrInput = new LogisticRegression.Options
                 {
                     TrainingData = data,
                     L1Weight = (Single)0.1 * i,
@@ -1062,7 +1020,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     NormalizeFeatures = NormalizeOption.Yes
                 };
                 predictorModels[i] = LogisticRegression.TrainBinary(Env, lrInput).PredictorModel;
-                var transformModel = new TransformModel(Env, data, splitOutput.TrainData[i]);
+                var transformModel = new TransformModelImpl(Env, data, splitOutput.TrainData[i]);
 
                 predictorModels[i] = ModelOperations.CombineTwoModels(Env,
                     new ModelOperations.SimplePredictorModelInput()
@@ -1117,10 +1075,10 @@ namespace Microsoft.ML.Runtime.RunTests
             using (var strm = file.CreateWriteStream())
                 regressionEnsembleModel.Save(Env, strm);
 
-            IPredictorModel loadedFromSaved;
+            PredictorModel loadedFromSaved;
             using (var file = Env.OpenInputFile(modelPath))
             using (var strm = file.OpenReadStream())
-                loadedFromSaved = new PredictorModel(Env, strm);
+                loadedFromSaved = new PredictorModelImpl(Env, strm);
 
             var scoredFromSaved = ScoreModel.Score(Env,
                 new ScoreModel.Input()
@@ -1129,43 +1087,43 @@ namespace Microsoft.ML.Runtime.RunTests
                     PredictorModel = loadedFromSaved
                 }).ScoredData;
 
-            using (var cursReg = regressionScored.GetRowCursor(col => true))
-            using (var cursBin = binaryScored.GetRowCursor(col => true))
-            using (var cursBinCali = binaryScoredCalibrated.GetRowCursor(col => true))
-            using (var curs0 = individualScores[0].GetRowCursor(col => true))
-            using (var curs1 = individualScores[1].GetRowCursor(col => true))
-            using (var curs2 = individualScores[2].GetRowCursor(col => true))
-            using (var curs3 = individualScores[3].GetRowCursor(col => true))
-            using (var curs4 = individualScores[4].GetRowCursor(col => true))
-            using (var cursSaved = scoredFromSaved.GetRowCursor(col => true))
+            using (var cursReg = regressionScored.GetRowCursorForAllColumns())
+            using (var cursBin = binaryScored.GetRowCursorForAllColumns())
+            using (var cursBinCali = binaryScoredCalibrated.GetRowCursorForAllColumns())
+            using (var curs0 = individualScores[0].GetRowCursorForAllColumns())
+            using (var curs1 = individualScores[1].GetRowCursorForAllColumns())
+            using (var curs2 = individualScores[2].GetRowCursorForAllColumns())
+            using (var curs3 = individualScores[3].GetRowCursorForAllColumns())
+            using (var curs4 = individualScores[4].GetRowCursorForAllColumns())
+            using (var cursSaved = scoredFromSaved.GetRowCursorForAllColumns())
             {
-                var good = curs0.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out int col);
-                Assert.True(good);
-                var getter0 = curs0.GetGetter<Single>(col);
-                good = curs1.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter1 = curs1.GetGetter<Single>(col);
-                good = curs2.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter2 = curs2.GetGetter<Single>(col);
-                good = curs3.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter3 = curs3.GetGetter<Single>(col);
-                good = curs4.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter4 = curs4.GetGetter<Single>(col);
-                good = cursReg.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterReg = cursReg.GetGetter<Single>(col);
-                good = cursBin.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterBin = cursBin.GetGetter<Single>(col);
-                good = cursBinCali.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterBinCali = cursBinCali.GetGetter<Single>(col);
-                good = cursSaved.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterSaved = cursSaved.GetGetter<Single>(col);
+                var scoreColumn = curs0.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter0 = curs0.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs1.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter1 = curs1.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs2.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter2 = curs2.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs3.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter3 = curs3.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = curs4.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter4 = curs4.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursReg.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterReg = cursReg.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursBin.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterBin = cursBin.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursBinCali.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterBinCali = cursBinCali.GetGetter<Single>(scoreColumn.Value.Index);
+                scoreColumn = cursSaved.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterSaved = cursSaved.GetGetter<Single>(scoreColumn.Value.Index);
 
                 var c = new Average(Env).GetCombiner();
                 while (cursReg.MoveNext())
@@ -1216,11 +1174,11 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             var dataPath = GetDataPath("iris.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
-            var dataView = ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            var dataView = EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Label", DataKind.R4, 0),
                         new TextLoader.Column("Features", DataKind.R4, new [] { new TextLoader.Range(1, 4) })
@@ -1232,25 +1190,22 @@ namespace Microsoft.ML.Runtime.RunTests
 
             const int nModels = 5;
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = nModels + 1 });
-            var predictorModels = new IPredictorModel[nModels];
+            var predictorModels = new PredictorModel[nModels];
             var individualScores = new IDataView[nModels];
             for (int i = 0; i < nModels; i++)
             {
                 var data = splitOutput.TrainData[i];
-                data = new RffEstimator(Env, new[] {
-                    new RffTransform.ColumnInfo("Features", "Features1", 10, false),
-                    new RffTransform.ColumnInfo("Features", "Features2", 10, false),
+                data = new RandomFourierFeaturizingEstimator(Env, new[] {
+                    new RandomFourierFeaturizingEstimator.ColumnInfo("Features1", 10, false, "Features"),
+                    new RandomFourierFeaturizingEstimator.ColumnInfo("Features2", 10, false, "Features"),
                 }).Fit(data).Transform(data);
-                data = ConcatTransform.Create(Env, new ConcatTransform.Arguments()
-                {
-                    Column = new[] { new ConcatTransform.Column() { Name = "Features", Source = new[] { "Features1", "Features2" } } }
-                }, data);
+                data = new ColumnConcatenatingTransformer(Env, "Features", new[] { "Features1", "Features2" }).Transform(data);
 
-                var mlr = new MulticlassLogisticRegression(Env, "Features", "Label");
+                var mlr = ML.MulticlassClassification.Trainers.LogisticRegression();
                 var rmd = new RoleMappedData(data, "Label", "Features");
 
-                predictorModels[i] = new PredictorModel(Env, rmd, data, mlr.Train(rmd));
-                var transformModel = new TransformModel(Env, data, splitOutput.TrainData[i]);
+                predictorModels[i] = new PredictorModelImpl(Env, rmd, data, mlr.Train(rmd));
+                var transformModel = new TransformModelImpl(Env, data, splitOutput.TrainData[i]);
 
                 predictorModels[i] = ModelOperations.CombineTwoModels(Env,
                     new ModelOperations.SimplePredictorModelInput()
@@ -1280,10 +1235,10 @@ namespace Microsoft.ML.Runtime.RunTests
             using (var strm = file.CreateWriteStream())
                 mcEnsembleModel.Save(Env, strm);
 
-            IPredictorModel loadedFromSaved;
+            PredictorModel loadedFromSaved;
             using (var file = Env.OpenInputFile(modelPath))
             using (var strm = file.OpenReadStream())
-                loadedFromSaved = new PredictorModel(Env, strm);
+                loadedFromSaved = new PredictorModelImpl(Env, strm);
 
             var scoredFromSaved = ScoreModel.Score(Env,
                 new ScoreModel.Input()
@@ -1292,35 +1247,35 @@ namespace Microsoft.ML.Runtime.RunTests
                     PredictorModel = loadedFromSaved
                 }).ScoredData;
 
-            using (var curs = mcScored.GetRowCursor(col => true))
-            using (var cursSaved = scoredFromSaved.GetRowCursor(col => true))
-            using (var curs0 = individualScores[0].GetRowCursor(col => true))
-            using (var curs1 = individualScores[1].GetRowCursor(col => true))
-            using (var curs2 = individualScores[2].GetRowCursor(col => true))
-            using (var curs3 = individualScores[3].GetRowCursor(col => true))
-            using (var curs4 = individualScores[4].GetRowCursor(col => true))
+            using (var curs = mcScored.GetRowCursorForAllColumns())
+            using (var cursSaved = scoredFromSaved.GetRowCursorForAllColumns())
+            using (var curs0 = individualScores[0].GetRowCursorForAllColumns())
+            using (var curs1 = individualScores[1].GetRowCursorForAllColumns())
+            using (var curs2 = individualScores[2].GetRowCursorForAllColumns())
+            using (var curs3 = individualScores[3].GetRowCursorForAllColumns())
+            using (var curs4 = individualScores[4].GetRowCursorForAllColumns())
             {
-                var good = curs0.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out int col);
-                Assert.True(good);
-                var getter0 = curs0.GetGetter<VBuffer<Single>>(col);
-                good = curs1.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter1 = curs1.GetGetter<VBuffer<Single>>(col);
-                good = curs2.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter2 = curs2.GetGetter<VBuffer<Single>>(col);
-                good = curs3.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter3 = curs3.GetGetter<VBuffer<Single>>(col);
-                good = curs4.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter4 = curs4.GetGetter<VBuffer<Single>>(col);
-                good = curs.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getter = curs.GetGetter<VBuffer<Single>>(col);
-                good = cursSaved.Schema.TryGetColumnIndex(MetadataUtils.Const.ScoreValueKind.Score, out col);
-                Assert.True(good);
-                var getterSaved = cursSaved.GetGetter<VBuffer<Single>>(col);
+                var scoreColumn = curs0.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter0 = curs0.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = curs1.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter1 = curs1.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = curs2.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter2 = curs2.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = curs3.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter3 = curs3.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = curs4.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter4 = curs4.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = curs.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getter = curs.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
+                scoreColumn = cursSaved.Schema.GetColumnOrNull(MetadataUtils.Const.ScoreValueKind.Score);
+                Assert.True(scoreColumn.HasValue);
+                var getterSaved = cursSaved.GetGetter<VBuffer<Single>>(scoreColumn.Value.Index);
 
                 var c = new MultiAverage(Env, new MultiAverage.Arguments()).GetCombiner();
                 VBuffer<Single> score = default(VBuffer<Single>);
@@ -1344,9 +1299,9 @@ namespace Microsoft.ML.Runtime.RunTests
                     getter3(ref score0[3]);
                     getter4(ref score0[4]);
                     getterSaved(ref scoreSaved);
-                    Assert.True(CompareVBuffers(ref scoreSaved, ref score, ref dense1, ref dense2));
+                    Assert.True(CompareVBuffers(in scoreSaved, in score, ref dense1, ref dense2));
                     c(ref avg, score0, null);
-                    Assert.True(CompareVBuffers(ref avg, ref score, ref dense1, ref dense2));
+                    Assert.True(CompareVBuffers(in avg, in score, ref dense1, ref dense2));
                 }
                 Assert.False(curs0.MoveNext());
                 Assert.False(curs1.MoveNext());
@@ -1357,19 +1312,19 @@ namespace Microsoft.ML.Runtime.RunTests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(BaseTestBaseline), nameof(BaseTestBaseline.LessThanNetCore30OrNotNetCore))]
         public void EntryPointPipelineEnsembleGetSummary()
         {
             var dataPath = GetDataPath("breast-cancer-withheader.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
             var dataView =
-                ImportTextData.TextLoader(Env,
-                    new ImportTextData.LoaderInput
+                EntryPoints.ImportTextData.TextLoader(Env,
+                    new EntryPoints.ImportTextData.LoaderInput
                     {
                         InputFile = inputFile,
                         Arguments =
                         {
-                            Column = new[]
+                            Columns = new[]
                             {
                                 new TextLoader.Column("Label", DataKind.R4, 0),
                                 new TextLoader.Column("Features", DataKind.R4, new[] { new TextLoader.Range(1, 8) }),
@@ -1382,27 +1337,24 @@ namespace Microsoft.ML.Runtime.RunTests
 
             const int nModels = 4;
             var splitOutput = CVSplit.Split(Env, new CVSplit.Input { Data = dataView, NumFolds = nModels });
-            var predictorModels = new IPredictorModel[nModels];
+            var predictorModels = new PredictorModel[nModels];
             for (int i = 0; i < nModels; i++)
             {
                 var data = splitOutput.TrainData[i];
-                data = CategoricalTransform.Create(Env,
-                    new CategoricalTransform.Arguments()
-                    {
-                        Column = new[] { new CategoricalTransform.Column() { Name = "Cat", Source = "Cat" } }
-                    }, data);
-                data = new ConcatTransform(Env, new ConcatTransform.ColumnInfo("Features", i % 2 == 0 ? new[] { "Features", "Cat" } : new[] { "Cat", "Features" })).Transform(data);
+                data = new OneHotEncodingEstimator(Env, "Cat").Fit(data).Transform(data);
+                data = new ColumnConcatenatingTransformer(Env, new ColumnConcatenatingTransformer.ColumnInfo("Features", i % 2 == 0 ? new[] { "Features", "Cat" } : new[] { "Cat", "Features" })).Transform(data);
                 if (i % 2 == 0)
                 {
-                    var lrInput = new LogisticRegression.Arguments
+                    var lrInput = new LogisticRegression.Options
                     {
                         TrainingData = data,
                         NormalizeFeatures = NormalizeOption.Yes,
                         NumThreads = 1,
-                        ShowTrainingStats = true
+                        ShowTrainingStats = true,
+                        StdComputer = new ComputeLRTrainingStdThroughHal()
                     };
                     predictorModels[i] = LogisticRegression.TrainBinary(Env, lrInput).PredictorModel;
-                    var transformModel = new TransformModel(Env, data, splitOutput.TrainData[i]);
+                    var transformModel = new TransformModelImpl(Env, data, splitOutput.TrainData[i]);
 
                     predictorModels[i] = ModelOperations.CombineTwoModels(Env,
                         new ModelOperations.SimplePredictorModelInput()
@@ -1415,7 +1367,7 @@ namespace Microsoft.ML.Runtime.RunTests
                         RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Feature, "Features"),
                         RoleMappedSchema.CreatePair(RoleMappedSchema.ColumnRole.Label, "Label"));
                     var predictor = trainer.Train(rmd);
-                    predictorModels[i] = new PredictorModel(Env, rmd, splitOutput.TrainData[i], predictor);
+                    predictorModels[i] = new PredictorModelImpl(Env, rmd, splitOutput.TrainData[i], predictor);
                 }
             }
 
@@ -1446,14 +1398,14 @@ namespace Microsoft.ML.Runtime.RunTests
                     var saver = Env.CreateSaver("Text");
                     using (var file = Env.CreateOutputFile(summary))
                         DataSaverUtils.SaveDataView(ch, saver, summaryDataViews.Summaries[i], file);
-                    CheckEquality(@"../Common/EntryPoints", $"ensemble-model{i}-summary.txt");
+                    CheckEquality(@"../Common/EntryPoints", $"ensemble-model{i}-summary.txt", digitsOfPrecision: 4);
 
                     if (summaryDataViews.Stats[i] != null)
                     {
                         var stats = DeleteOutputPath(@"../Common/EntryPoints", $"ensemble-model{i}-stats.txt");
                         using (var file = Env.CreateOutputFile(stats))
                             DataSaverUtils.SaveDataView(ch, saver, summaryDataViews.Stats[i], file);
-                        CheckEquality(@"../Common/EntryPoints", $"ensemble-model{i}-stats.txt");
+                        CheckEquality(@"../Common/EntryPoints", $"ensemble-model{i}-stats.txt", digitsOfPrecision: 4);
                     }
                 }
             }
@@ -1463,7 +1415,7 @@ namespace Microsoft.ML.Runtime.RunTests
             using (var writer = Utils.OpenWriter(file))
                 summarizable.SaveSummary(writer, null);
 
-            CheckEquality(@"../Common/EntryPoints", "ensemble-summary.txt");
+            CheckEquality(@"../Common/EntryPoints", "ensemble-summary.txt", digitsOfPrecision: 4);
 
             var summaryKvps = binaryEnsembleCalibrated.Predictor as ICanGetSummaryInKeyValuePairs;
             Assert.NotNull(summaryKvps);
@@ -1487,20 +1439,22 @@ namespace Microsoft.ML.Runtime.RunTests
                     }
                 }
             }
-            CheckEquality(@"../Common/EntryPoints", "ensemble-summary-key-value-pairs.txt");
+            CheckEquality(@"../Common/EntryPoints", "ensemble-summary-key-value-pairs.txt", digitsOfPrecision: 4);
 
             Done();
         }
 
-        private static bool CompareVBuffers(ref VBuffer<Single> v1, ref VBuffer<Single> v2, ref VBuffer<Single> dense1, ref VBuffer<Single> dense2)
+        private static bool CompareVBuffers(in VBuffer<Single> v1, in VBuffer<Single> v2, ref VBuffer<Single> dense1, ref VBuffer<Single> dense2)
         {
             if (v1.Length != v2.Length)
                 return false;
             v1.CopyToDense(ref dense1);
             v2.CopyToDense(ref dense2);
+            var dense1Values = dense1.GetValues();
+            var dense2Values = dense2.GetValues();
             for (int i = 0; i < dense1.Length; i++)
             {
-                if (!Single.IsNaN(dense1.Values[i]) && !Single.IsNaN(dense2.Values[i]) && dense1.Values[i] != dense2.Values[i])
+                if (!Single.IsNaN(dense1Values[i]) && !Single.IsNaN(dense2Values[i]) && dense1Values[i] != dense2Values[i])
                     return false;
             }
             return true;
@@ -1704,21 +1658,21 @@ namespace Microsoft.ML.Runtime.RunTests
 
             using (var loader = new BinaryLoader(Env, new BinaryLoader.Arguments(), outputPath))
             {
-                using (var cursor = loader.GetRowCursor(col => true))
+                using (var cursor = loader.GetRowCursorForAllColumns())
                 {
                     ReadOnlyMemory<char> cat = default;
                     ReadOnlyMemory<char> catValue = default;
                     uint catKey = 0;
 
-                    bool success = loader.Schema.TryGetColumnIndex("Cat", out int catCol);
-                    Assert.True(success);
-                    var catGetter = cursor.GetGetter<ReadOnlyMemory<char>>(catCol);
-                    success = loader.Schema.TryGetColumnIndex("CatValue", out int catValueCol);
-                    Assert.True(success);
-                    var catValueGetter = cursor.GetGetter<ReadOnlyMemory<char>>(catValueCol);
-                    success = loader.Schema.TryGetColumnIndex("Key", out int keyCol);
-                    Assert.True(success);
-                    var keyGetter = cursor.GetGetter<uint>(keyCol);
+                    var catColumn = loader.Schema.GetColumnOrNull("Cat");
+                    Assert.True(catColumn.HasValue);
+                    var catGetter = cursor.GetGetter<ReadOnlyMemory<char>>(catColumn.Value.Index);
+                    var catValueCol = loader.Schema.GetColumnOrNull("CatValue");
+                    Assert.True(catValueCol.HasValue);
+                    var catValueGetter = cursor.GetGetter<ReadOnlyMemory<char>>(catValueCol.Value.Index);
+                    var keyColumn = loader.Schema.GetColumnOrNull("Key");
+                    Assert.True(keyColumn.HasValue);
+                    var keyGetter = cursor.GetGetter<uint>(keyColumn.Value.Index);
 
                     while (cursor.MoveNext())
                     {
@@ -1957,22 +1911,22 @@ namespace Microsoft.ML.Runtime.RunTests
             using (var loader = new BinaryLoader(Env, new BinaryLoader.Arguments(), instanceMetricsPath))
             {
                 Assert.Equal(103, CountRows(loader));
-                Assert.True(loader.Schema.TryGetColumnIndex("GroupId", out var groupCol));
-                Assert.True(loader.Schema.TryGetColumnIndex("Label", out var labelCol));
+                Assert.NotNull(loader.Schema.GetColumnOrNull("GroupId"));
+                Assert.NotNull(loader.Schema.GetColumnOrNull("Label"));
             }
         }
 
         [ConditionalFact(typeof(Environment), nameof(Environment.Is64BitProcess))] // LightGBM is 64-bit only
         public void EntryPointLightGbmBinary()
         {
-            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryPredictor).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryModelParameters).Assembly);
             TestEntryPointRoutine("breast-cancer.txt", "Trainers.LightGbmBinaryClassifier");
         }
 
         [ConditionalFact(typeof(Environment), nameof(Environment.Is64BitProcess))] // LightGBM is 64-bit only
         public void EntryPointLightGbmMultiClass()
         {
-            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryPredictor).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(LightGbmBinaryModelParameters).Assembly);
             TestEntryPointRoutine(GetDataPath(@"iris.txt"), "Trainers.LightGbmClassifier");
         }
 
@@ -2033,7 +1987,7 @@ namespace Microsoft.ML.Runtime.RunTests
         }
 
         [Fact]
-        public void EntryPointLightLdaTransform()
+        public void EntryPointLightLdaTransformer()
         {
             string dataFile = DeleteOutputPath("SavePipe", "SavePipeTextLightLda-SampleText.txt");
             File.WriteAllLines(dataFile, new[] {
@@ -2161,7 +2115,7 @@ namespace Microsoft.ML.Runtime.RunTests
                       {
                         'Name': 'Key1',
                         'Source': 'Key',
-                        'Range': '[5-10,21-24]'
+                        'Range': '0-9'
                       }
                       ]",
                     @"'Column': [
@@ -2480,7 +2434,7 @@ namespace Microsoft.ML.Runtime.RunTests
 
             var args = new NormalizeTransform.MinMaxArguments()
             {
-                Column = new[]
+                Columns = new[]
                 {
                     NormalizeTransform.AffineColumn.Parse("A"),
                     new NormalizeTransform.AffineColumn() { Name = "B", Source = "B", FixZero = false },
@@ -2535,7 +2489,7 @@ namespace Microsoft.ML.Runtime.RunTests
             Assert.True(success);
             var inputBuilder = new InputBuilder(Env, info.InputType, catalog);
 
-            var args = new LinearClassificationTrainer.Arguments()
+            var options = new SdcaBinaryTrainer.Options()
             {
                 NormalizeFeatures = NormalizeOption.Yes,
                 CheckFrequency = 42
@@ -2548,7 +2502,7 @@ namespace Microsoft.ML.Runtime.RunTests
             inputBindingMap.Add("TrainingData", new List<ParameterBinding>() { parameterBinding });
             inputMap.Add(parameterBinding, new SimpleVariableBinding("data"));
 
-            var result = inputBuilder.GetJsonObject(args, inputBindingMap, inputMap);
+            var result = inputBuilder.GetJsonObject(options, inputBindingMap, inputMap);
             var json = FixWhitespace(result.ToString(Formatting.Indented));
 
             var expected =
@@ -2560,8 +2514,8 @@ namespace Microsoft.ML.Runtime.RunTests
             expected = FixWhitespace(expected);
             Assert.Equal(expected, json);
 
-            args.LossFunction = new HingeLoss.Arguments();
-            result = inputBuilder.GetJsonObject(args, inputBindingMap, inputMap);
+            options.LossFunction = new HingeLoss.Arguments();
+            result = inputBuilder.GetJsonObject(options, inputBindingMap, inputMap);
             json = FixWhitespace(result.ToString(Formatting.Indented));
 
             expected =
@@ -2576,8 +2530,8 @@ namespace Microsoft.ML.Runtime.RunTests
             expected = FixWhitespace(expected);
             Assert.Equal(expected, json);
 
-            args.LossFunction = new HingeLoss.Arguments() { Margin = 2 };
-            result = inputBuilder.GetJsonObject(args, inputBindingMap, inputMap);
+            options.LossFunction = new HingeLoss.Arguments() { Margin = 2 };
+            result = inputBuilder.GetJsonObject(options, inputBindingMap, inputMap);
             json = FixWhitespace(result.ToString(Formatting.Indented));
 
             expected =
@@ -2654,115 +2608,8 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model");
+            var model = runner.GetOutput<PredictorModel>("model");
             Assert.NotNull(model);
-        }
-
-        [Fact]
-        public void EntryPointTrainTestBinaryMacro()
-        {
-            string inputGraph = @"
-                {
-                  'Nodes': [
-                    {
-                      'Name': 'Data.CustomTextLoader',
-                      'Inputs': {
-                        'InputFile': '$file'
-                      },
-                      'Outputs': {
-                        'Data': '$data'
-                      }
-                    },
-                    {
-                      'Name': 'Transforms.TrainTestDatasetSplitter',
-                      'Inputs': {
-                        'Data': '$data',
-                        'Fraction': 0.8
-                      },
-                      'Outputs': {
-                        'TrainData': '$TrainData',
-                        'TestData': '$TestData'
-                      }
-                    },
-                    {
-                      'Name': 'Models.TrainTestBinaryEvaluator',
-                      'Inputs': {
-                        'TrainingData': '$TrainData',
-                        'TestingData': '$TestData',
-                        'Nodes': [
-                          {
-                            'Name': 'Transforms.ConditionalNormalizer',
-                            'Inputs': {
-                              'Data': '$data1',
-                              'Column': [{ 'Name': 'Features', 'Source': 'Features' }]
-                            },
-                            'Outputs': {
-                              'OutputData': '$data2',
-                              'Model': '$transform'
-                            }
-                          },
-                          {
-                            'Name': 'Trainers.LogisticRegressionBinaryClassifier',
-                            'Inputs': {
-                              'TrainingData': '$data2',
-                              'NumThreads': 1
-                            },
-                            'Outputs': {
-                              'PredictorModel': '$predictor'
-                            }
-                          },
-                          {
-                            'Name': 'Transforms.ManyHeterogeneousModelCombiner',
-                            'Inputs': {
-                              'TransformModels': ['$transform'],
-                              'PredictorModel': '$predictor'
-                            },
-                            'Outputs': {
-                              'PredictorModel': '$model'
-                            }
-                          }
-                        ],
-                        'Inputs': {
-                          'Data': '$data1'
-                        },
-                        'Outputs': {
-                          'Model': '$model'
-                        }
-                      },
-                      'Outputs': {
-                        'PredictorModel': '$model',
-                        'Warnings': '$Warnings',
-                        'OverallMetrics': '$OverallMetrics',
-                        'PerInstanceMetrics': '$PerInstanceMetrics',
-                        'ConfusionMatrix': '$ConfusionMatrix'
-                      }
-                    },
-                  ]
-                }";
-
-            JObject graph = JObject.Parse(inputGraph);
-            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
-
-            var dataPath = GetDataPath("breast-cancer.txt");
-            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
-            runner.SetInput("file", inputFile);
-
-            runner.RunAll();
-
-            var model = runner.GetOutput<IPredictorModel>("model");
-            Assert.NotNull(model);
-
-            var metrics = runner.GetOutput<IDataView>("OverallMetrics");
-            Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
-            {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
-                Assert.True(cursor.MoveNext());
-                double auc = 0;
-                aucGetter(ref auc);
-                Assert.True(auc > 0.99);
-            }
         }
 
         [Fact]
@@ -2856,15 +2703,16 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model");
+            var model = runner.GetOutput<PredictorModel>("model");
             Assert.NotNull(model);
 
             var metrics = runner.GetOutput<IDataView>("OverallMetrics");
             Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
+            using (var cursor = metrics.GetRowCursorForAllColumns())
             {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
+                var aucCol = cursor.Schema.GetColumnOrNull("AUC");
+                Assert.True(aucCol.HasValue);
+                var aucGetter = cursor.GetGetter<double>(aucCol.Value.Index);
                 Assert.True(cursor.MoveNext());
                 double auc = 0;
                 aucGetter(ref auc);
@@ -2960,15 +2808,16 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model");
+            var model = runner.GetOutput<PredictorModel>("model");
             Assert.NotNull(model);
 
             var metrics = runner.GetOutput<IDataView>("OverallMetrics");
             Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
+            using (var cursor = metrics.GetRowCursorForAllColumns())
             {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
+                var aucCol = cursor.Schema.GetColumnOrNull("AUC");
+                Assert.True(aucCol.HasValue);
+                var aucGetter = cursor.GetGetter<double>(aucCol.Value.Index);
                 Assert.True(cursor.MoveNext());
                 double auc = 0;
                 aucGetter(ref auc);
@@ -3120,35 +2969,32 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model");
+            var model = runner.GetOutput<PredictorModel>("model");
             Assert.NotNull(model);
 
-            model = runner.GetOutput<IPredictorModel>("model2");
+            model = runner.GetOutput<PredictorModel>("model2");
             Assert.NotNull(model);
 
             var metrics = runner.GetOutput<IDataView>("OverallMetrics");
-            Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
-            {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
-                Assert.True(cursor.MoveNext());
-                double auc = 0;
-                aucGetter(ref auc);
-                Assert.True(auc > 0.99);
-            }
+
+            Action<IDataView> validateAuc = (metricsIdv) => 
+            { 
+                Assert.NotNull(metricsIdv);
+                using (var cursor = metricsIdv.GetRowCursorForAllColumns())
+                {
+                    var aucCol = cursor.Schema.GetColumnOrNull("AUC");
+                    var aucGetter = cursor.GetGetter<double>(aucCol.Value.Index);
+                    Assert.True(cursor.MoveNext());
+                    double auc = 0;
+                    aucGetter(ref auc);
+                    Assert.True(auc > 0.99);
+                }
+            };
+
+            validateAuc(metrics);
 
             metrics = runner.GetOutput<IDataView>("OverallMetrics2");
-            Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
-            {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
-                Assert.True(cursor.MoveNext());
-                double auc = 0;
-                aucGetter(ref auc);
-                Assert.True(auc > 0.99);
-            }
+            validateAuc(metrics);
         }
 
         [Fact]
@@ -3314,122 +3160,33 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel[]>("model");
+            var model = runner.GetOutput<PredictorModel[]>("model");
             Assert.NotNull(model[0]);
 
-            model = runner.GetOutput<IPredictorModel[]>("model2");
+            model = runner.GetOutput<PredictorModel[]>("model2");
             Assert.NotNull(model[0]);
 
             var metrics = runner.GetOutput<IDataView>("OverallMetrics");
-            Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
-            {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
-                Assert.True(cursor.MoveNext());
-                double auc = 0;
-                aucGetter(ref auc);
-                Assert.True(auc > 0.99);
-            }
+
+            Action<IDataView> aucValidate = (metricsIdv) => 
+            { 
+                Assert.NotNull(metricsIdv);
+                using (var cursor = metrics.GetRowCursorForAllColumns())
+                {
+                    var aucColumn = cursor.Schema.GetColumnOrNull("AUC");
+                    Assert.True(aucColumn.HasValue);
+                    var aucGetter = cursor.GetGetter<double>(aucColumn.Value.Index);
+                    Assert.True(cursor.MoveNext());
+                    double auc = 0;
+                    aucGetter(ref auc);
+                    Assert.True(auc > 0.99);
+                }
+            };
+
+            aucValidate(metrics);
 
             metrics = runner.GetOutput<IDataView>("OverallMetrics2");
-            Assert.NotNull(metrics);
-            using (var cursor = metrics.GetRowCursor(col => true))
-            {
-                Assert.True(cursor.Schema.TryGetColumnIndex("AUC", out int aucCol));
-                var aucGetter = cursor.GetGetter<double>(aucCol);
-                Assert.True(cursor.MoveNext());
-                double auc = 0;
-                aucGetter(ref auc);
-                Assert.True(auc > 0.99);
-            }
-        }
-
-        [Fact]
-        public void EntryPointMacroEarlyExpansion()
-        {
-            string inputGraph = @"
-                {
-                  'Nodes': [
-                    {
-                      'Name': 'Data.CustomTextLoader',
-                      'Inputs': {
-                        'InputFile': '$file'
-                      },
-                      'Outputs': {
-                        'Data': '$data'
-                      }
-                    },
-                    {
-                      'Name': 'Transforms.TrainTestDatasetSplitter',
-                      'Inputs': {
-                        'Data': '$data',
-                        'Fraction': 0.8
-                      },
-                      'Outputs': {
-                        'TrainData': '$TrainData',
-                        'TestData': '$TestData'
-                      }
-                    },
-                    {
-                      'Name': 'Models.TrainTestBinaryEvaluator',
-                      'Inputs': {
-                        'TrainingData': '$TrainData',
-                        'TestingData': '$TestData',
-                        'Nodes': [
-                          {
-                            'Name': 'Transforms.ConditionalNormalizer',
-                            'Inputs': {
-                              'Data': '$data1',
-                              'Column': [{ 'Name': 'Features', 'Source': 'Features' }]
-                            },
-                            'Outputs': {
-                              'OutputData': '$data2',
-                              'Model': '$transform'
-                            }
-                          },
-                          {
-                            'Name': 'Trainers.LogisticRegressionBinaryClassifier',
-                            'Inputs': {
-                              'TrainingData': '$data2',
-                              'NumThreads': 1
-                            },
-                            'Outputs': {
-                              'PredictorModel': '$predictor'
-                            }
-                          },
-                          {
-                            'Name': 'Transforms.ManyHeterogeneousModelCombiner',
-                            'Inputs': {
-                              'TransformModels': ['$transform'],
-                              'PredictorModel': '$predictor'
-                            },
-                            'Outputs': {
-                              'Model': '$model'
-                            }
-                          }
-                        ],
-                        'Inputs': {
-                          'Data': '$data1'
-                        },
-                        'Outputs': {
-                          'Model': '$model'
-                        }
-                      },
-                      'Outputs': {
-                        'PredictorModel': '$model',
-                        'Warnings': '$Warnings',
-                        'OverallMetrics': '$OverallMetrics',
-                        'PerInstanceMetrics': '$PerInstanceMetrics',
-                        'ConfusionMatrix': '$ConfusionMatrix'
-                      }
-                    },
-                  ]
-                }";
-
-            JObject graphJson = JObject.Parse(inputGraph);
-            var graph = new EntryPointGraph(Env, graphJson[FieldNames.Nodes] as JArray);
-            Assert.True(graph.Macros.All(x => x.CanStart()));
+            aucValidate(metrics);
         }
 
         [Fact]
@@ -3493,7 +3250,7 @@ namespace Microsoft.ML.Runtime.RunTests
 
             runner.RunAll();
 
-            var model = runner.GetOutput<IPredictorModel>("model");
+            var model = runner.GetOutput<PredictorModel>("model");
             Assert.NotNull(model);
         }
 
@@ -3569,13 +3326,13 @@ namespace Microsoft.ML.Runtime.RunTests
             var dataPath = GetDataPath("breast-cancer-withheader.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
 
-            var dataView = ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            var dataView = EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
-                    SeparatorChars = new []{'\t' },
+                    Separators = new []{'\t' },
                     HasHeader = true,
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Label", type: null, 0),
                         new TextLoader.Column("Features", DataKind.Num, new [] { new TextLoader.Range(1, 9) })
@@ -3585,17 +3342,17 @@ namespace Microsoft.ML.Runtime.RunTests
                 InputFile = inputFile,
             }).Data;
 
-            var lrInput = new LogisticRegression.Arguments
+            var lrInput = new LogisticRegression.Options
             {
                 TrainingData = dataView,
                 NormalizeFeatures = NormalizeOption.Yes,
                 NumThreads = 1,
-                // REVIEW: this depends on MKL library which is not available. Only a subset of training stats are reported.
-                ShowTrainingStats = true
+                ShowTrainingStats = true,
+                StdComputer = new ComputeLRTrainingStdThroughHal()
             };
             var model = LogisticRegression.TrainBinary(Env, lrInput).PredictorModel;
 
-            var mcLrInput = new MulticlassLogisticRegression.Arguments
+            var mcLrInput = new MulticlassLogisticRegression.Options
             {
                 TrainingData = dataView,
                 NormalizeFeatures = NormalizeOption.Yes,
@@ -3630,10 +3387,10 @@ namespace Microsoft.ML.Runtime.RunTests
                     DataSaverUtils.SaveDataView(ch, saver, mcOutput.Stats, file);
             }
 
-            CheckEquality(@"../Common/EntryPoints", "lr-weights.txt");
-            CheckEquality(@"../Common/EntryPoints", "lr-stats.txt");
-            CheckEquality(@"../Common/EntryPoints", "mc-lr-weights.txt");
-            CheckEquality(@"../Common/EntryPoints", "mc-lr-stats.txt");
+            CheckEquality(@"../Common/EntryPoints", "lr-weights.txt", digitsOfPrecision: 6);
+            CheckEquality(@"../Common/EntryPoints", "lr-stats.txt", digitsOfPrecision: 6);
+            CheckEquality(@"../Common/EntryPoints", "mc-lr-weights.txt", digitsOfPrecision: 3);
+            CheckEquality(@"../Common/EntryPoints", "mc-lr-stats.txt", digitsOfPrecision: 5);
             Done();
         }
 
@@ -3643,13 +3400,13 @@ namespace Microsoft.ML.Runtime.RunTests
             var dataPath = GetDataPath("MNIST.Train.0-class.tiny.txt");
             using (var inputFile = new SimpleFileHandle(Env, dataPath, false, false))
             {
-                var dataView = ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+                var dataView = EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
                 {
                     Arguments =
                 {
-                    SeparatorChars = new []{'\t' },
+                    Separators = new []{'\t' },
                     HasHeader = false,
-                    Column = new[]
+                    Columns = new[]
                     {
                         new TextLoader.Column("Features", DataKind.R4, new [] { new TextLoader.Range(1, 784) })
                     }
@@ -3675,7 +3432,7 @@ namespace Microsoft.ML.Runtime.RunTests
                         DataSaverUtils.SaveDataView(ch, saver, output.Summary, file);
                 }
 
-                CheckEquality(@"../Common/EntryPoints", "pca-weights.txt");
+                CheckEquality(@"../Common/EntryPoints", "pca-weights.txt", digitsOfPrecision: 4);
                 Done();
             }
         }
@@ -3755,13 +3512,13 @@ namespace Microsoft.ML.Runtime.RunTests
 
             using (var loader = new BinaryLoader(Env, new BinaryLoader.Arguments(), outputPath))
             {
-                using (var cursor = loader.GetRowCursor(col => true))
+                using (var cursor = loader.GetRowCursorForAllColumns())
                 {
                     ReadOnlyMemory<char> predictedLabel = default;
 
-                    var success = loader.Schema.TryGetColumnIndex("PredictedLabel", out int predictedLabelCol);
-                    Assert.True(success);
-                    var predictedLabelGetter = cursor.GetGetter<ReadOnlyMemory<char>>(predictedLabelCol);
+                    var predictedLabelCol = loader.Schema.GetColumnOrNull("PredictedLabel");
+                    Assert.True(predictedLabelCol.HasValue);
+                    var predictedLabelGetter = cursor.GetGetter<ReadOnlyMemory<char>>(predictedLabelCol.Value.Index);
 
                     while (cursor.MoveNext())
                     {
@@ -3780,20 +3537,20 @@ namespace Microsoft.ML.Runtime.RunTests
             var dataPath = GetDataPath("adult.tiny.with-schema.txt");
             var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
 #pragma warning disable 0618
-            var dataView = ImportTextData.ImportText(Env, new ImportTextData.Input { InputFile = inputFile }).Data;
+            var dataView = EntryPoints.ImportTextData.ImportText(Env, new EntryPoints.ImportTextData.Input { InputFile = inputFile }).Data;
 #pragma warning restore 0618
-            var cat = Categorical.CatTransformDict(Env, new CategoricalTransform.Arguments()
+            var cat = Categorical.CatTransformDict(Env, new OneHotEncodingTransformer.Options()
             {
                 Data = dataView,
-                Column = new[] { new CategoricalTransform.Column { Name = "Categories", Source = "Categories" } }
+                Columns = new[] { new OneHotEncodingTransformer.Column { Name = "Categories", Source = "Categories" } }
             });
-            var concat = SchemaManipulation.ConcatColumns(Env, new ConcatTransform.Arguments()
+            var concat = SchemaManipulation.ConcatColumns(Env, new ColumnConcatenatingTransformer.Options()
             {
                 Data = cat.OutputData,
-                Column = new[] { new ConcatTransform.Column { Name = "Features", Source = new[] { "Categories", "NumericFeatures" } } }
+                Columns = new[] { new ColumnConcatenatingTransformer.Column { Name = "Features", Source = new[] { "Categories", "NumericFeatures" } } }
             });
 
-            var fastTree = FastTree.FastTree.TrainBinary(Env, new FastTreeBinaryClassificationTrainer.Arguments
+            var fastTree = Trainers.FastTree.FastTree.TrainBinary(Env, new FastTreeBinaryClassificationTrainer.Options
             {
                 FeatureColumn = "Features",
                 NumTrees = 5,
@@ -3815,17 +3572,24 @@ namespace Microsoft.ML.Runtime.RunTests
             });
 
             var view = treeLeaf.OutputData;
-            Assert.True(view.Schema.TryGetColumnIndex("Trees", out int treesCol));
-            Assert.True(view.Schema.TryGetColumnIndex("Leaves", out int leavesCol));
-            Assert.True(view.Schema.TryGetColumnIndex("Paths", out int pathsCol));
+            var treesCol = view.Schema.GetColumnOrNull("Trees");
+            Assert.True(treesCol.HasValue);
+
+            var leavesCol = view.Schema.GetColumnOrNull("Leaves");
+            Assert.True(leavesCol.HasValue);
+
+            var pathsCol = view.Schema.GetColumnOrNull("Paths");
+            Assert.True(pathsCol.HasValue);
+
+
             VBuffer<float> treeValues = default(VBuffer<float>);
             VBuffer<float> leafIndicators = default(VBuffer<float>);
             VBuffer<float> pathIndicators = default(VBuffer<float>);
-            using (var curs = view.GetRowCursor(c => c == treesCol || c == leavesCol || c == pathsCol))
+            using (var curs = view.GetRowCursor(treesCol.Value, leavesCol.Value, pathsCol.Value))
             {
-                var treesGetter = curs.GetGetter<VBuffer<float>>(treesCol);
-                var leavesGetter = curs.GetGetter<VBuffer<float>>(leavesCol);
-                var pathsGetter = curs.GetGetter<VBuffer<float>>(pathsCol);
+                var treesGetter = curs.GetGetter<VBuffer<float>>(treesCol.Value.Index);
+                var leavesGetter = curs.GetGetter<VBuffer<float>>(leavesCol.Value.Index);
+                var pathsGetter = curs.GetGetter<VBuffer<float>>(pathsCol.Value.Index);
                 while (curs.MoveNext())
                 {
                     treesGetter(ref treeValues);
@@ -3833,9 +3597,9 @@ namespace Microsoft.ML.Runtime.RunTests
                     pathsGetter(ref pathIndicators);
 
                     Assert.Equal(5, treeValues.Length);
-                    Assert.Equal(5, treeValues.Count);
+                    Assert.Equal(5, treeValues.GetValues().Length);
                     Assert.Equal(20, leafIndicators.Length);
-                    Assert.Equal(5, leafIndicators.Count);
+                    Assert.Equal(5, leafIndicators.GetValues().Length);
                     Assert.Equal(15, pathIndicators.Length);
                 }
             }
@@ -3850,12 +3614,12 @@ namespace Microsoft.ML.Runtime.RunTests
                 "The five boxing wizards jump quickly."
             });
             var inputFile = new SimpleFileHandle(Env, dataFile, false, false);
-            var dataView = ImportTextData.TextLoader(Env, new ImportTextData.LoaderInput()
+            var dataView = EntryPoints.ImportTextData.TextLoader(Env, new EntryPoints.ImportTextData.LoaderInput()
             {
                 Arguments =
                 {
-                    SeparatorChars = new []{' '},
-                    Column = new[]
+                    Separators = new []{' '},
+                    Columns = new[]
                     {
                         new TextLoader.Column("Text", DataKind.Text,
                             new [] { new TextLoader.Range() { Min = 0, VariableEnd=true, ForceVector=true} })
@@ -3863,23 +3627,24 @@ namespace Microsoft.ML.Runtime.RunTests
                 },
                 InputFile = inputFile,
             }).Data;
-            var embedding = Transforms.TextAnalytics.WordEmbeddings(Env, new WordEmbeddingsTransform.Arguments()
+            var embedding = Transforms.Text.TextAnalytics.WordEmbeddings(Env, new WordEmbeddingsExtractingTransformer.Options()
             {
                 Data = dataView,
-                Column = new[] { new WordEmbeddingsTransform.Column { Name = "Features", Source = "Text" } },
-                ModelKind = WordEmbeddingsTransform.PretrainedModelKind.Sswe
+                Columns = new[] { new WordEmbeddingsExtractingTransformer.Column { Name = "Features", Source = "Text" } },
+                ModelKind = WordEmbeddingsExtractingEstimator.PretrainedModelKind.Sswe
             });
             var result = embedding.OutputData;
-            using (var cursor = result.GetRowCursor((x => true)))
+            using (var cursor = result.GetRowCursorForAllColumns())
             {
-                Assert.True(result.Schema.TryGetColumnIndex("Features", out int featColumn));
-                var featGetter = cursor.GetGetter<VBuffer<float>>(featColumn);
+                var featColumn = result.Schema.GetColumnOrNull("Features");
+                Assert.True(featColumn.HasValue);
+                var featGetter = cursor.GetGetter<VBuffer<float>>(featColumn.Value.Index);
                 VBuffer<float> feat = default;
                 while (cursor.MoveNext())
                 {
                     featGetter(ref feat);
-                    Assert.True(feat.Count == 150);
-                    Assert.True(feat.Values[0] != 0);
+                    Assert.Equal(150, feat.GetValues().Length);
+                    Assert.NotEqual(0, feat.GetValues()[0]);
                 }
             }
         }
@@ -3887,7 +3652,7 @@ namespace Microsoft.ML.Runtime.RunTests
         [ConditionalFact(typeof(Environment), nameof(Environment.Is64BitProcess))] // TensorFlow is 64-bit only
         public void EntryPointTensorFlowTransform()
         {
-            Env.ComponentCatalog.RegisterAssembly(typeof(TensorFlowTransform).Assembly);
+            Env.ComponentCatalog.RegisterAssembly(typeof(TensorFlowTransformer).Assembly);
 
             TestEntryPointPipelineRoutine(GetDataPath("Train-Tiny-28x28.txt"), "col=Label:R4:0 col=Placeholder:R4:1-784",
                 new[] { "Transforms.TensorFlowScorer" },
@@ -3905,8 +3670,8 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath(Path.Combine("Timeseries", "A4Benchmark-TS1.csv")), "sep=, col=Features:R4:1 header=+",
                 new[]
                 {
-                    "TimeSeriesProcessing.SsaChangePointDetector",
-                    "TimeSeriesProcessing.SsaChangePointDetector",
+                    "TimeSeriesProcessingEntryPoints.SsaChangePointDetector",
+                    "TimeSeriesProcessingEntryPoints.SsaChangePointDetector",
                 },
                 new[]
                 {
@@ -3934,8 +3699,8 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath(Path.Combine("Timeseries", "real_1.csv")), "sep=, col=Features:R4:1 header=+",
                 new[]
                 {
-                    "TimeSeriesProcessing.IidSpikeDetector",
-                    "TimeSeriesProcessing.IidSpikeDetector",
+                    "TimeSeriesProcessingEntryPoints.IidSpikeDetector",
+                    "TimeSeriesProcessingEntryPoints.IidSpikeDetector",
                 },
                 new[]
                 {
@@ -3958,9 +3723,9 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath(Path.Combine("Timeseries", "A4Benchmark-TS2.csv")), "sep=, col=Features:R4:1 header=+",
                 new[]
                 {
-                    "TimeSeriesProcessing.SsaSpikeDetector",
-                    "TimeSeriesProcessing.SsaSpikeDetector",
-                    "TimeSeriesProcessing.SsaSpikeDetector",
+                    "TimeSeriesProcessingEntryPoints.SsaSpikeDetector",
+                    "TimeSeriesProcessingEntryPoints.SsaSpikeDetector",
+                    "TimeSeriesProcessingEntryPoints.SsaSpikeDetector",
                 },
                 new[]
                 {
@@ -3996,7 +3761,7 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath("breast-cancer.txt"), "col=Input:R4:1",
                 new[]
                 {
-                    "TimeSeriesProcessing.PercentileThresholdTransform"
+                    "TimeSeriesProcessingEntryPoints.PercentileThresholdTransform"
                 },
                 new[]
                 {
@@ -4013,7 +3778,7 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath("breast-cancer.txt"), "col=Input:R4:1",
                 new[]
                 {
-                    "TimeSeriesProcessing.PValueTransform"
+                    "TimeSeriesProcessingEntryPoints.PValueTransform"
                 },
                 new[]
                 {
@@ -4029,10 +3794,10 @@ namespace Microsoft.ML.Runtime.RunTests
             TestEntryPointPipelineRoutine(GetDataPath("breast-cancer.txt"), "col=Input:R4:1",
                 new[]
                 {
-                    "TimeSeriesProcessing.SlidingWindowTransform",
-                    "TimeSeriesProcessing.SlidingWindowTransform",
-                    "TimeSeriesProcessing.SlidingWindowTransform",
-                    "TimeSeriesProcessing.SlidingWindowTransform",
+                    "TimeSeriesProcessingEntryPoints.SlidingWindowTransform",
+                    "TimeSeriesProcessingEntryPoints.SlidingWindowTransform",
+                    "TimeSeriesProcessingEntryPoints.SlidingWindowTransform",
+                    "TimeSeriesProcessingEntryPoints.SlidingWindowTransform",
                 },
                 new[]
                 {
@@ -4053,6 +3818,1842 @@ namespace Microsoft.ML.Runtime.RunTests
                       'Wnd': '2',
                       'L': '1'"
                 });
+        }
+
+        [Fact]
+        public void EntryPointHashJoinCountTable()
+        {
+            TestEntryPointPipelineRoutine(GetDataPath("breast-cancer.txt"), "col=Text:Text:1-9 col=Label:0",
+                new[]
+                {
+                    "Transforms.HashConverter",
+                },
+                new[]
+                {
+                    @"'Column': [
+                      {
+                        'Name': 'Temp',
+                        'Src': 'Text'
+                      },
+                      {
+                        'Name': 'Temp2',
+                        'Src': 'Text',
+                        'CustomSlotMap': '0,1;2,3,4,5'
+                      }
+
+                      ]"
+                });
+        }
+
+        [Fact]
+        public void TestSimpleExperiment()
+        {
+            var dataPath = GetDataPath("adult.tiny.with-schema.txt");
+            string inputGraph = @"{
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': null,
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_642faec2bf064255bc9a2b1044e9d116'
+                        }
+                    }, {
+                        'Name': 'Transforms.MinMaxNormalizer',
+                        'Inputs': {
+                            'Column': [{
+                                    'FixZero': null,
+                                    'MaxTrainingExamples': null,
+                                    'Name': 'NumericFeatures',
+                                    'Source': 'NumericFeatures'
+                                }
+                            ],
+                            'FixZero': true,
+                            'MaxTrainingExamples': 1000000000,
+                            'Data': '$Var_642faec2bf064255bc9a2b1044e9d116'
+                        },
+                        'Outputs': {
+                            'OutputData': '$outputData',
+                            'Model': '$Var_9673b095f98f4ebcb19e8eb75a7a12e9'
+                        }
+                    }
+                ]
+            }";
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var data = runner.GetOutput<IDataView>("outputData");
+            var schema = data.Schema;
+            Assert.Equal(5, schema.Count);
+            var expected = new[] { "Label", "Workclass", "Categories", "NumericFeatures", "NumericFeatures" };
+            for (int i = 0; i < schema.Count; i++)
+                Assert.Equal(expected[i], schema[i].Name);
+        }
+
+        [Fact]
+        public void TestSimpleTrainExperiment()
+        {
+            var dataPath = GetDataPath("adult.tiny.with-schema.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': null,
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_99eb21288359485f936577da8f2e1061'
+                        }
+                    }, {
+                        'Name': 'Transforms.CategoricalOneHotVectorizer',
+                        'Inputs': {
+                            'Column': [{
+                                    'OutputKind': null,
+                                    'MaxNumTerms': null,
+                                    'Term': null,
+                                    'Sort': null,
+                                    'TextKeyValues': null,
+                                    'Name': 'Categories',
+                                    'Source': 'Categories'
+                                }
+                            ],
+                            'OutputKind': 'Ind',
+                            'MaxNumTerms': 1000000,
+                            'Term': null,
+                            'Sort': 'Occurrence',
+                            'TextKeyValues': true,
+                            'Data': '$Var_99eb21288359485f936577da8f2e1061'
+                        },
+                        'Outputs': {
+                            'OutputData': '$Var_c9e14b64d1a44114853331e80f1bde57',
+                            'Model': '$Var_85534ab1fc57480899180be5bbf20b38'
+                        }
+                    }, {
+                        'Name': 'Transforms.ColumnConcatenator',
+                        'Inputs': {
+                            'Column': [{
+                                    'Name': 'Features',
+                                    'Source': [
+                                        'Categories',
+                                        'NumericFeatures'
+                                    ]
+                                }
+                            ],
+                            'Data': '$Var_c9e14b64d1a44114853331e80f1bde57'
+                        },
+                        'Outputs': {
+                            'OutputData': '$Var_51d3ddc9792d4c6eb975e600e87b8cbc',
+                            'Model': '$Var_e3888e65f822424ca92959e442827d48'
+                        }
+                    }, {
+                        'Name': 'Trainers.StochasticDualCoordinateAscentBinaryClassifier',
+                        'Inputs': {
+                            'LossFunction': {
+                                'Name': 'HingeLoss',
+                                'Settings': {
+                                    'Margin': 1.1
+                                }
+                            },
+                            'PositiveInstanceWeight': 1.0,
+                            'Calibrator': {
+                                'Name': 'PlattCalibrator',
+                                'Settings': {}
+                            },
+                            'MaxCalibrationExamples': 1000000,
+                            'L2Const': null,
+                            'L1Threshold': null,
+                            'NumThreads': 1,
+                            'ConvergenceTolerance': 0.1,
+                            'MaxIterations': null,
+                            'Shuffle': false,
+                            'CheckFrequency': null,
+                            'BiasLearningRate': 0.0,
+                            'LabelColumn': 'Label',
+                            'TrainingData': '$Var_51d3ddc9792d4c6eb975e600e87b8cbc',
+                            'FeatureColumn': 'Features',
+                            'NormalizeFeatures': 'Auto',
+                            'Caching': 'Auto'
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_e7e860bdbf1c4a628a2a0912673afd36'
+                        }
+                    }, {
+                        'Name': 'Transforms.DatasetScorer',
+                        'Inputs': {
+                            'Data': '$Var_51d3ddc9792d4c6eb975e600e87b8cbc',
+                            'PredictorModel': '$Var_e7e860bdbf1c4a628a2a0912673afd36',
+                            'Suffix': null
+                        },
+                        'Outputs': {
+                            'ScoredData': '$Var_be77f9c4e45c43b7a67984304c291bf5',
+                            'ScoringTransform': '$Var_826e5697e56a467a81331c5ef3eff37f'
+                        }
+                    }, {
+                        'Name': 'Models.BinaryClassificationEvaluator',
+                        'Inputs': {
+                            'ProbabilityColumn': null,
+                            'Threshold': 0.0,
+                            'UseRawScoreThreshold': true,
+                            'NumRocExamples': 100000,
+                            'MaxAucExamples': -1,
+                            'NumAuPrcExamples': 100000,
+                            'LabelColumn': null,
+                            'WeightColumn': null,
+                            'ScoreColumn': null,
+                            'StratColumn': null,
+                            'Data': '$Var_be77f9c4e45c43b7a67984304c291bf5',
+                            'NameColumn': 'Name'
+                        },
+                        'Outputs': {
+                            'ConfusionMatrix': '$Var_cd6d3485a95d4405b469ce65c124e04a',
+                            'Warnings': '$Var_94528ba8fca14eb48b7e3f712aced38a',
+                            'OverallMetrics': '$Var_2130b277d4e0485f9cc5162c176767fa',
+                            'PerInstanceMetrics': '$Var_991a2f8bed28442bb9bd0a0b9ff14e45'
+                        }
+                    }
+                ]
+            }";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var data = runner.GetOutput<IDataView>("Var_2130b277d4e0485f9cc5162c176767fa");
+
+            var schema = data.Schema;
+            var aucCol = schema.GetColumnOrNull("AUC");
+            Assert.True(aucCol.HasValue);
+            using (var cursor = data.GetRowCursor(aucCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(aucCol.Value.Index);
+                var b = cursor.MoveNext();
+                Assert.True(b);
+                double auc = 0;
+                getter(ref auc);
+                Assert.Equal(0.93, auc, 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [ConditionalFact(typeof(BaseTestBaseline), nameof(BaseTestBaseline.LessThanNetCore30OrNotNetCore))] // netcore3.0 output differs from Baseline
+        public void TestCrossValidationMacro()
+        {
+            var dataPath = GetDataPath(TestDatasets.generatedRegressionDatasetmacro.trainFilename);
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    ';'
+                                ],
+                                'Column': [{
+                                        'Name': 'Label',
+                                        'Type': 'R4',
+                                        'Source': [{
+                                                'Min': 11,
+                                                'Max': 11,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Features',
+                                        'Type': 'R4',
+                                        'Source': [{
+                                                'Min': 0,
+                                                'Max': 10,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }
+                                ],
+                                'TrimWhitespace': false,
+                                'HasHeader': true
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_6b6d6b5b5f894374a98904481d876a6e'
+                        }
+                    }, {
+                        'Name': 'Models.CrossValidator',
+                        'Inputs': {
+                            'Data': '$Var_6b6d6b5b5f894374a98904481d876a6e',
+                            'TransformModel': null,
+                            'Nodes': [{
+                                    'Name': 'Transforms.NoOperation',
+                                    'Inputs': {
+                                        'Data': '$Var_abda1d0923f64b56bd01dc42fb57db33'
+                                    },
+                                    'Outputs': {
+                                        'OutputData': '$Var_65ecee1d96a84b9d9645f616b278e77e',
+                                        'Model': '$Var_6807c0e8cb42452c8fc687545aabc43b'
+                                    }
+                                }, {
+                                    'Name': 'Transforms.RandomNumberGenerator',
+                                    'Inputs': {
+                                        'Column': [{
+                                                'Name': 'Weight1',
+                                                'UseCounter': null,
+                                                'Seed': null
+                                            }
+                                        ],
+                                        'UseCounter': false,
+                                        'Seed': 42,
+                                        'Data': '$Var_65ecee1d96a84b9d9645f616b278e77e'
+                                    },
+                                    'Outputs': {
+                                        'OutputData': '$Var_8b36a1e70c9f4504973140ad15eac72f',
+                                        'Model': '$Var_94bac81ee2e448ba82e3a21e116c0f9c'
+                                    }
+                                }, {
+                                    'Name': 'Trainers.PoissonRegressor',
+                                    'Inputs': {
+                                        'L2Weight': 1.0,
+                                        'L1Weight': 1.0,
+                                        'OptTol': 1E-07,
+                                        'MemorySize': 20,
+                                        'MaxIterations': 2147483647,
+                                        'SgdInitializationTolerance': 0.0,
+                                        'Quiet': false,
+                                        'InitWtsDiameter': 0.0,
+                                        'UseThreads': true,
+                                        'NumThreads': 1,
+                                        'DenseOptimizer': false,
+                                        'EnforceNonNegativity': false,
+                                        'WeightColumn': {
+                                            'Value': 'Weight1',
+                                            'IsExplicit': true
+                                        },
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_8b36a1e70c9f4504973140ad15eac72f',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_5763097adbdb40e3b161540cb0c88b91'
+                                    }
+                                }, {
+                                    'Name': 'Transforms.ManyHeterogeneousModelCombiner',
+                                    'Inputs': {
+                                        'TransformModels': [
+                                            '$Var_6807c0e8cb42452c8fc687545aabc43b',
+                                            '$Var_94bac81ee2e448ba82e3a21e116c0f9c'
+                                        ],
+                                        'PredictorModel': '$Var_5763097adbdb40e3b161540cb0c88b91'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_77f3e99700ae453586513565171faf55'
+                                    }
+                                }
+                            ],
+                            'Inputs': {
+                                'Data': '$Var_abda1d0923f64b56bd01dc42fb57db33'
+                            },
+                            'Outputs': {
+                                'PredictorModel': '$Var_77f3e99700ae453586513565171faf55'
+                            },
+                            'StratificationColumn': null,
+                            'NumFolds': 2,
+                            'Kind': 'SignatureRegressorTrainer',
+                            'LabelColumn': 'Label',
+                            'WeightColumn': {
+                                'Value': 'Weight1',
+                                'IsExplicit': true
+                            },
+                            'GroupColumn': null,
+                            'NameColumn': null
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_5aaddf0cdc6d4d92b05a2804fcc3a2ee',
+                            'Warnings': '$Var_33701e91260c4a7184fd595ce392cb08',
+                            'OverallMetrics': '$overallMetrics',
+                            'PerInstanceMetrics': '$Var_89681d817cf543ecabbe6421bf37acb2',
+                            'ConfusionMatrix': '$Var_43fa86567b5f4e129e58bd12a575c06b'
+                        }
+                    }
+                ]
+            }";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var data = runner.GetOutput<IDataView>("overallMetrics");
+
+            var schema = data.Schema;
+            var metricCol = schema.GetColumnOrNull("L1(avg)");
+            Assert.True(metricCol.HasValue);
+            var foldCol = schema.GetColumnOrNull("Fold Index");
+            Assert.True(foldCol.HasValue);
+            var isWeightedCol = schema.GetColumnOrNull("IsWeighted");
+            Assert.True(isWeightedCol.HasValue);
+            using (var cursor = data.GetRowCursor(metricCol.Value, foldCol.Value, isWeightedCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(metricCol.Value.Index);
+                var foldGetter = cursor.GetGetter<ReadOnlyMemory<char>>(foldCol.Value.Index);
+                ReadOnlyMemory<char> fold = default;
+                var isWeightedGetter = cursor.GetGetter<bool>(isWeightedCol.Value.Index);
+                bool isWeighted = default;
+                double avg = 0;
+                double weightedAvg = 0;
+                bool b;
+                for (int w = 0; w < 2; w++)
+                {
+                    // Get the average.
+                    b = cursor.MoveNext();
+                    Assert.True(b);
+                    if (w == 1)
+                        getter(ref weightedAvg);
+                    else
+                        getter(ref avg);
+                    foldGetter(ref fold);
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr("Average", fold));
+                    isWeightedGetter(ref isWeighted);
+                    Assert.True(isWeighted == (w == 1));
+
+                    // Get the standard deviation.
+                    b = cursor.MoveNext();
+                    Assert.True(b);
+                    double stdev = 0;
+                    getter(ref stdev);
+                    foldGetter(ref fold);
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr("Standard Deviation", fold));
+                    if (w == 1)
+                        Assert.Equal(1.585, stdev, 3);
+                    else
+                        Assert.Equal(1.39, stdev, 2);
+                    isWeightedGetter(ref isWeighted);
+                    Assert.True(isWeighted == (w == 1));
+                }
+                double sum = 0;
+                double weightedSum = 0;
+                for (int f = 0; f < 2; f++)
+                {
+                    for (int w = 0; w < 2; w++)
+                    {
+                        b = cursor.MoveNext();
+                        Assert.True(b);
+                        double val = 0;
+                        getter(ref val);
+                        foldGetter(ref fold);
+                        if (w == 1)
+                            weightedSum += val;
+                        else
+                            sum += val;
+                        Assert.True(ReadOnlyMemoryUtils.EqualsStr("Fold " + f, fold));
+                        isWeightedGetter(ref isWeighted);
+                        Assert.True(isWeighted == (w == 1));
+                    }
+                }
+                Assert.Equal(weightedAvg, weightedSum / 2);
+                Assert.Equal(avg, sum / 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [Fact]
+        public void TestCrossValidationMacroWithMultiClass()
+        {
+            var dataPath = GetDataPath(@"Train-Tiny-28x28.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': null,
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_48530e4c7d0c4d0889ba9e6e80e6eb73'
+                        }
+                    }, {
+                        'Name': 'Models.CrossValidator',
+                        'Inputs': {
+                            'Data': '$Var_48530e4c7d0c4d0889ba9e6e80e6eb73',
+                            'TransformModel': null,
+                            'Nodes': [{
+                                    'Name': 'Transforms.NoOperation',
+                                    'Inputs': {
+                                        'Data': '$Var_1a2f44ae0aec4af4b4d1337d2cc733da'
+                                    },
+                                    'Outputs': {
+                                        'OutputData': '$Var_a060169d8a924964b71447904c0d2ee9',
+                                        'Model': '$Var_dbd0f197ee7145ce91ac26ef62936206'
+                                    }
+                                }, {
+                                    'Name': 'Trainers.StochasticDualCoordinateAscentClassifier',
+                                    'Inputs': {
+                                        'LossFunction': {
+                                            'Name': 'LogLoss',
+                                            'Settings': {}
+                                        },
+                                        'L2Const': null,
+                                        'L1Threshold': null,
+                                        'NumThreads': 1,
+                                        'ConvergenceTolerance': 0.1,
+                                        'MaxIterations': null,
+                                        'Shuffle': true,
+                                        'CheckFrequency': null,
+                                        'BiasLearningRate': 0.0,
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_a060169d8a924964b71447904c0d2ee9',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_0bb334380a514e0ab6b2215b0c049846'
+                                    }
+                                }, {
+                                    'Name': 'Transforms.ManyHeterogeneousModelCombiner',
+                                    'Inputs': {
+                                        'TransformModels': [
+                                            '$Var_dbd0f197ee7145ce91ac26ef62936206'
+                                        ],
+                                        'PredictorModel': '$Var_0bb334380a514e0ab6b2215b0c049846'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_0b4526e0c7534eada0264802128c32c5'
+                                    }
+                                }
+                            ],
+                            'Inputs': {
+                                'Data': '$Var_1a2f44ae0aec4af4b4d1337d2cc733da'
+                            },
+                            'Outputs': {
+                                'PredictorModel': '$Var_0b4526e0c7534eada0264802128c32c5'
+                            },
+                            'StratificationColumn': null,
+                            'NumFolds': 2,
+                            'Kind': 'SignatureMultiClassClassifierTrainer',
+                            'LabelColumn': 'Label',
+                            'WeightColumn': null,
+                            'GroupColumn': null,
+                            'NameColumn': null
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_76decfcf71f5447d92869a4dd9200ea6',
+                            'Warnings': '$warnings',
+                            'OverallMetrics': '$overallMetrics',
+                            'PerInstanceMetrics': '$Var_74d0215056034d6c9a99f90485530b89',
+                            'ConfusionMatrix': '$confusionMatrix'
+                        }
+                    }
+                ]
+            }
+            ";
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var data = runner.GetOutput<IDataView>("overallMetrics");
+
+            var schema = data.Schema;
+            var metricCol = schema.GetColumnOrNull("Accuracy(micro-avg)");
+            Assert.True(metricCol.HasValue);
+            var foldCol = schema.GetColumnOrNull("Fold Index");
+            Assert.True(foldCol.HasValue);
+            using (var cursor = data.GetRowCursor(metricCol.Value, foldCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(metricCol.Value.Index);
+                var foldGetter = cursor.GetGetter<ReadOnlyMemory<char>>(foldCol.Value.Index);
+                ReadOnlyMemory<char> fold = default;
+
+                // Get the average.
+                var b = cursor.MoveNext();
+                Assert.True(b);
+                double avg = 0;
+                getter(ref avg);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Average", fold));
+
+                // Get the standard deviation.
+                b = cursor.MoveNext();
+                Assert.True(b);
+                double stdev = 0;
+                getter(ref stdev);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Standard Deviation", fold));
+                Assert.Equal(0.024809923969586353, stdev, 3);
+
+                double sum = 0;
+                double val = 0;
+                for (int f = 0; f < 2; f++)
+                {
+                    b = cursor.MoveNext();
+                    Assert.True(b);
+                    getter(ref val);
+                    foldGetter(ref fold);
+                    sum += val;
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr("Fold " + f, fold));
+                }
+                Assert.Equal(avg, sum / 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+
+            var confusion = runner.GetOutput<IDataView>("confusionMatrix");
+            schema = confusion.Schema;
+            var countCol = schema.GetColumnOrNull("Count");
+            Assert.True(countCol.HasValue);
+            foldCol = schema.GetColumnOrNull("Fold Index");
+            Assert.True(foldCol.HasValue);
+            var type = schema["Count"].Metadata.Schema[MetadataUtils.Kinds.SlotNames].Type;
+            Assert.True(type is VectorType vecType && vecType.ItemType is TextType && vecType.Size == 10);
+            var slotNames = default(VBuffer<ReadOnlyMemory<char>>);
+            schema["Count"].GetSlotNames(ref slotNames);
+            var slotNameValues = slotNames.GetValues();
+            for (int i = 0; i < slotNameValues.Length; i++)
+            {
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr(i.ToString(), slotNameValues[i]));
+            }
+            using (var curs = confusion.GetRowCursorForAllColumns())
+            {
+                var countGetter = curs.GetGetter<VBuffer<double>>(countCol.Value.Index);
+                var foldGetter = curs.GetGetter<ReadOnlyMemory<char>>(foldCol.Value.Index);
+                var confCount = default(VBuffer<double>);
+                var foldIndex = default(ReadOnlyMemory<char>);
+                int rowCount = 0;
+                var foldCur = "Fold 0";
+                while (curs.MoveNext())
+                {
+                    countGetter(ref confCount);
+                    foldGetter(ref foldIndex);
+                    rowCount++;
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr(foldCur, foldIndex));
+                    if (rowCount == 10)
+                    {
+                        rowCount = 0;
+                        foldCur = "Fold 1";
+                    }
+                }
+                Assert.Equal(0, rowCount);
+            }
+
+            var warnings = runner.GetOutput<IDataView>("warnings");
+            using (var cursor = warnings.GetRowCursorForAllColumns())
+                Assert.False(cursor.MoveNext());
+        }
+
+        [Fact]
+        public void TestCrossValidationMacroMultiClassWithWarnings()
+        {
+            var dataPath = GetDataPath(@"Train-Tiny-28x28.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': null,
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_48dc3daef3924a22af794e67896272b0'
+                        }
+                    }, {
+                        'Name': 'Transforms.RowRangeFilter',
+                        'Inputs': {
+                            'Column': 'Label',
+                            'Min': 0.0,
+                            'Max': 5.0,
+                            'Complement': false,
+                            'IncludeMin': true,
+                            'IncludeMax': null,
+                            'Data': '$Var_48dc3daef3924a22af794e67896272b0'
+                        },
+                        'Outputs': {
+                            'OutputData': '$Var_64f1865a99b84b9d9e0c72292c14c3af',
+                            'Model': '$Var_4a34fa76d6d04c14b57b8f146010b9ad'
+                        }
+                    }, {
+                        'Name': 'Transforms.TextToKeyConverter',
+                        'Inputs': {
+                            'Column': [{
+                                    'MaxNumTerms': null,
+                                    'Term': null,
+                                    'Sort': 'Value',
+                                    'TextKeyValues': null,
+                                    'Name': 'Strat',
+                                    'Source': 'Label'
+                                }
+                            ],
+                            'MaxNumTerms': 1000000,
+                            'Term': null,
+                            'Sort': 'Occurrence',
+                            'TextKeyValues': false,
+                            'Data': '$Var_64f1865a99b84b9d9e0c72292c14c3af'
+                        },
+                        'Outputs': {
+                            'OutputData': '$Var_41d7ff9c3dcd45fc869f2691dd628797',
+                            'Model': '$Var_ee952a378c624306a7b6b8b65dbb8583'
+                        }
+                    }, {
+                        'Name': 'Models.CrossValidator',
+                        'Inputs': {
+                            'Data': '$Var_41d7ff9c3dcd45fc869f2691dd628797',
+                            'TransformModel': null,
+                            'Nodes': [{
+                                    'Name': 'Transforms.NoOperation',
+                                    'Inputs': {
+                                        'Data': '$Var_28af8fabe6dd446a9f20aa97c53c4d4e'
+                                    },
+                                    'Outputs': {
+                                        'OutputData': '$Var_fb8137cb48ac49a7b1b56aa3ed5e0b23',
+                                        'Model': '$Var_2cfc22486a4f475f8dc814feccb08f71'
+                                    }
+                                }, {
+                                    'Name': 'Trainers.LogisticRegressionClassifier',
+                                    'Inputs': {
+                                        'ShowTrainingStats': false,
+                                        'L2Weight': 1.0,
+                                        'L1Weight': 1.0,
+                                        'OptTol': 1E-07,
+                                        'MemorySize': 20,
+                                        'MaxIterations': 2147483647,
+                                        'SgdInitializationTolerance': 0.0,
+                                        'Quiet': false,
+                                        'InitWtsDiameter': 0.0,
+                                        'UseThreads': true,
+                                        'NumThreads': 1,
+                                        'DenseOptimizer': false,
+                                        'EnforceNonNegativity': false,
+                                        'WeightColumn': null,
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_fb8137cb48ac49a7b1b56aa3ed5e0b23',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_05e29f93f3bb4c31a93d71e051dfbb2a'
+                                    }
+                                }
+                            ],
+                            'Inputs': {
+                                'Data': '$Var_28af8fabe6dd446a9f20aa97c53c4d4e'
+                            },
+                            'Outputs': {
+                                'PredictorModel': '$Var_05e29f93f3bb4c31a93d71e051dfbb2a'
+                            },
+                            'StratificationColumn': 'Strat',
+                            'NumFolds': 2,
+                            'Kind': 'SignatureMultiClassClassifierTrainer',
+                            'LabelColumn': 'Label',
+                            'WeightColumn': null,
+                            'GroupColumn': null,
+                            'NameColumn': null
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_2df88bffdbca48d5972decf058c26e3b',
+                            'Warnings': '$warning',
+                            'OverallMetrics': '$Var_94ec7af856fa4c2aa16f354cf51cee78',
+                            'PerInstanceMetrics': '$Var_637187e4984f4eed93cd37ab20685867',
+                            'ConfusionMatrix': '$Var_c5fe1a4fbded49898173662f6be2f6cc'
+                        }
+                    }
+                ]
+            }
+            ";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var warnings = runner.GetOutput<IDataView>("warning");
+
+            var schema = warnings.Schema;
+            var warningCol = schema.GetColumnOrNull("WarningText");
+            Assert.True(warningCol.HasValue);
+            using (var cursor = warnings.GetRowCursor(warningCol.Value))
+            {
+                var getter = cursor.GetGetter<ReadOnlyMemory<char>>(warningCol.Value.Index);
+
+                var b = cursor.MoveNext();
+                Assert.True(b);
+                var warning = default(ReadOnlyMemory<char>);
+                getter(ref warning);
+                Assert.Contains("test instances with class values not seen in the training set.", warning.ToString());
+                b = cursor.MoveNext();
+                Assert.True(b);
+                getter(ref warning);
+                Assert.Contains("Detected columns of variable length: SortedScores, SortedClasses", warning.ToString());
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [Fact]
+        public void TestCrossValidationMacroWithStratification()
+        {
+            var dataPath = GetDataPath(@"breast-cancer.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': [{
+                                        'Name': 'Label',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 0,
+                                                'Max': 0,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Strat',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 1,
+                                                'Max': 1,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Features',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 2,
+                                                'Max': 9,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }
+                                ],
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_95d56835dc384629bd288ea0a8879277'
+                        }
+                    }, {
+                        'Name': 'Models.CrossValidator',
+                        'Inputs': {
+                            'Data': '$Var_95d56835dc384629bd288ea0a8879277',
+                            'TransformModel': null,
+                            'Nodes': [{
+                                    'Name': 'Transforms.NoOperation',
+                                    'Inputs': {
+                                        'Data': '$Var_e02622de697b478e9b7d84a5220fee8c'
+                                    },
+                                    'Outputs': {
+                                        'OutputData': '$Var_44f5c60e439b49fe9e5bf372be4613ee',
+                                        'Model': '$Var_14976738a67940a58cfeffdf795a74c1'
+                                    }
+                                }, {
+                                    'Name': 'Trainers.StochasticDualCoordinateAscentBinaryClassifier',
+                                    'Inputs': {
+                                        'LossFunction': {
+                                            'Name': 'LogLoss',
+                                            'Settings': {}
+                                        },
+                                        'PositiveInstanceWeight': 1.0,
+                                        'Calibrator': {
+                                            'Name': 'PlattCalibrator',
+                                            'Settings': {}
+                                        },
+                                        'MaxCalibrationExamples': 1000000,
+                                        'L2Const': null,
+                                        'L1Threshold': null,
+                                        'NumThreads': 1,
+                                        'ConvergenceTolerance': 0.1,
+                                        'MaxIterations': null,
+                                        'Shuffle': true,
+                                        'CheckFrequency': null,
+                                        'BiasLearningRate': 0.0,
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_44f5c60e439b49fe9e5bf372be4613ee',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_d0c2303905c146b6873693e58ed6e2aa'
+                                    }
+                                }, {
+                                    'Name': 'Transforms.ManyHeterogeneousModelCombiner',
+                                    'Inputs': {
+                                        'TransformModels': [
+                                            '$Var_14976738a67940a58cfeffdf795a74c1'
+                                        ],
+                                        'PredictorModel': '$Var_d0c2303905c146b6873693e58ed6e2aa'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_250e906783ab442e85af77298c531199'
+                                    }
+                                }
+                            ],
+                            'Inputs': {
+                                'Data': '$Var_e02622de697b478e9b7d84a5220fee8c'
+                            },
+                            'Outputs': {
+                                'PredictorModel': '$Var_250e906783ab442e85af77298c531199'
+                            },
+                            'StratificationColumn': 'Strat',
+                            'NumFolds': 2,
+                            'Kind': 'SignatureBinaryClassifierTrainer',
+                            'LabelColumn': 'Label',
+                            'WeightColumn': null,
+                            'GroupColumn': null,
+                            'NameColumn': null
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_c824c370674e4c358012ca07e04ee79e',
+                            'Warnings': '$Var_4f7a5c14043247fdb53ea3a264afcb6f',
+                            'OverallMetrics': '$overallmetrics',
+                            'PerInstanceMetrics': '$Var_1fe20a06e4a14215bc09ba8ff7ae603b',
+                            'ConfusionMatrix': '$Var_d159331c1bca445792a37ddd143b3a25'
+                        }
+                    }
+                ]
+            }
+            ";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+            var data = runner.GetOutput<IDataView>("overallmetrics");
+
+            var schema = data.Schema;
+            var metricCol = schema.GetColumnOrNull("AUC");
+            Assert.True(metricCol.HasValue);
+            var foldCol = schema.GetColumnOrNull("Fold Index");
+            Assert.True(foldCol.HasValue);
+            bool b;
+            using (var cursor = data.GetRowCursor(metricCol.Value, foldCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(metricCol.Value.Index);
+                var foldGetter = cursor.GetGetter<ReadOnlyMemory<char>>(foldCol.Value.Index);
+                ReadOnlyMemory<char> fold = default;
+
+                // Get the verage.
+                b = cursor.MoveNext();
+                Assert.True(b);
+                double avg = 0;
+                getter(ref avg);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Average", fold));
+
+                // Get the standard deviation.
+                b = cursor.MoveNext();
+                Assert.True(b);
+                double stdev = 0;
+                getter(ref stdev);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Standard Deviation", fold));
+                Assert.Equal(0.00481, stdev, 5);
+
+                double sum = 0;
+                double val = 0;
+                for (int f = 0; f < 2; f++)
+                {
+                    b = cursor.MoveNext();
+                    Assert.True(b);
+                    getter(ref val);
+                    foldGetter(ref fold);
+                    sum += val;
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr("Fold " + f, fold));
+                }
+                Assert.Equal(avg, sum / 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [Fact]
+        public void TestCrossValidationMacroWithNonDefaultNames()
+        {
+            string dataPath = GetDataPath(@"adult.tiny.with-schema.txt");
+            string inputGraph = @"
+            {
+            'Nodes': [{
+                    'Name': 'Data.TextLoader',
+                    'Inputs': {
+                        'InputFile': '$inputFile',
+                        'Arguments': {
+                            'UseThreads': true,
+                            'HeaderFile': null,
+                            'MaxRows': null,
+                            'AllowQuoting': true,
+                            'AllowSparse': true,
+                            'InputSize': null,
+                            'Separator': [
+                                '\t'
+                            ],
+                            'Column': [{
+                                    'Name': 'Label',
+                                    'Type': null,
+                                    'Source': [{
+                                            'Min': 0,
+                                            'Max': 0,
+                                            'AutoEnd': false,
+                                            'VariableEnd': false,
+                                            'AllOther': false,
+                                            'ForceVector': false
+                                        }
+                                    ],
+                                    'KeyCount': null
+                                }, {
+                                    'Name': 'Workclass',
+                                    'Type': 'TX',
+                                    'Source': [{
+                                            'Min': 1,
+                                            'Max': 1,
+                                            'AutoEnd': false,
+                                            'VariableEnd': false,
+                                            'AllOther': false,
+                                            'ForceVector': false
+                                        }
+                                    ],
+                                    'KeyCount': null
+                                }, {
+                                    'Name': 'Features',
+                                    'Type': null,
+                                    'Source': [{
+                                            'Min': 9,
+                                            'Max': 14,
+                                            'AutoEnd': false,
+                                            'VariableEnd': false,
+                                            'AllOther': false,
+                                            'ForceVector': false
+                                        }
+                                    ],
+                                    'KeyCount': null
+                                }
+                            ],
+                            'TrimWhitespace': false,
+                            'HasHeader': true
+                        }
+                    },
+                    'Outputs': {
+                        'Data': '$Var_bfb5ef5be6f547de88af2409c8c35443'
+                    }
+                }, {
+                    'Name': 'Models.CrossValidator',
+                    'Inputs': {
+                        'Data': '$Var_bfb5ef5be6f547de88af2409c8c35443',
+                        'TransformModel': null,
+                        'Nodes': [{
+                                'Name': 'Transforms.TextToKeyConverter',
+                                'Inputs': {
+                                    'Column': [{
+                                            'MaxNumTerms': null,
+                                            'Term': null,
+                                            'Sort': null,
+                                            'TextKeyValues': null,
+                                            'Name': 'Label1',
+                                            'Source': 'Label'
+                                        }
+                                    ],
+                                    'MaxNumTerms': 1000000,
+                                    'Term': null,
+                                    'Sort': 'Occurrence',
+                                    'TextKeyValues': false,
+                                    'Data': '$Var_48d35aae527f439398805f51e5f0cfab'
+                                },
+                                'Outputs': {
+                                    'OutputData': '$Var_44ac8ba819da483089dacc0f12bae3d6',
+                                    'Model': '$Var_2039a1ba743549c1989de460c105b354'
+                                }
+                            }, {
+                                'Name': 'Transforms.HashConverter',
+                                'Inputs': {
+                                    'Column': [{
+                                            'Join': null,
+                                            'CustomSlotMap': null,
+                                            'HashBits': null,
+                                            'Seed': null,
+                                            'Ordered': null,
+                                            'Name': 'GroupId1',
+                                            'Source': 'Workclass'
+                                        }
+                                    ],
+                                    'Join': true,
+                                    'HashBits': 31,
+                                    'Seed': 314489979,
+                                    'Ordered': true,
+                                    'Data': '$Var_44ac8ba819da483089dacc0f12bae3d6'
+                                },
+                                'Outputs': {
+                                    'OutputData': '$Var_8f51ed90f5b642b2a80eeb628d67a5b3',
+                                    'Model': '$Var_5d04d6405abb40ed9efb0486c2e1688b'
+                                }
+                            }, {
+                                'Name': 'Trainers.FastTreeRanker',
+                                'Inputs': {
+                                    'CustomGains': '0,3,7,15,31',
+                                    'TrainDcg': false,
+                                    'SortingAlgorithm': 'DescendingStablePessimistic',
+                                    'LambdaMartMaxTruncation': 100,
+                                    'ShiftedNdcg': false,
+                                    'CostFunctionParam': 'w',
+                                    'DistanceWeight2': false,
+                                    'NormalizeQueryLambdas': false,
+                                    'BestStepRankingRegressionTrees': false,
+                                    'UseLineSearch': false,
+                                    'NumPostBracketSteps': 0,
+                                    'MinStepSize': 0.0,
+                                    'OptimizationAlgorithm': 'GradientDescent',
+                                    'EarlyStoppingRule': null,
+                                    'EarlyStoppingMetrics': 1,
+                                    'EnablePruning': false,
+                                    'UseTolerantPruning': false,
+                                    'PruningThreshold': 0.004,
+                                    'PruningWindowSize': 5,
+                                    'LearningRates': 0.2,
+                                    'Shrinkage': 1.0,
+                                    'DropoutRate': 0.0,
+                                    'GetDerivativesSampleRate': 1,
+                                    'WriteLastEnsemble': false,
+                                    'MaxTreeOutput': 100.0,
+                                    'RandomStart': false,
+                                    'FilterZeroLambdas': false,
+                                    'BaselineScoresFormula': null,
+                                    'BaselineAlphaRisk': null,
+                                    'PositionDiscountFreeform': null,
+                                    'ParallelTrainer': {
+                                        'Name': 'Single',
+                                        'Settings': {}
+                                    },
+                                    'NumThreads': 1,
+                                    'RngSeed': 123,
+                                    'FeatureSelectSeed': 123,
+                                    'EntropyCoefficient': 0.0,
+                                    'HistogramPoolSize': -1,
+                                    'DiskTranspose': null,
+                                    'FeatureFlocks': true,
+                                    'CategoricalSplit': false,
+                                    'MaxCategoricalGroupsPerNode': 64,
+                                    'MaxCategoricalSplitPoints': 64,
+                                    'MinDocsPercentageForCategoricalSplit': 0.001,
+                                    'MinDocsForCategoricalSplit': 100,
+                                    'Bias': 0.0,
+                                    'Bundling': 'None',
+                                    'MaxBins': 255,
+                                    'SparsifyThreshold': 0.7,
+                                    'FeatureFirstUsePenalty': 0.0,
+                                    'FeatureReusePenalty': 0.0,
+                                    'GainConfidenceLevel': 0.0,
+                                    'SoftmaxTemperature': 0.0,
+                                    'ExecutionTimes': false,
+                                    'NumLeaves': 20,
+                                    'MinDocumentsInLeafs': 10,
+                                    'NumTrees': 100,
+                                    'FeatureFraction': 1.0,
+                                    'BaggingSize': 0,
+                                    'BaggingTrainFraction': 0.7,
+                                    'SplitFraction': 1.0,
+                                    'Smoothing': 0.0,
+                                    'AllowEmptyTrees': true,
+                                    'FeatureCompressionLevel': 1,
+                                    'CompressEnsemble': false,
+                                    'MaxTreesAfterCompression': -1,
+                                    'PrintTestGraph': false,
+                                    'PrintTrainValidGraph': false,
+                                    'TestFrequency': 2147483647,
+                                    'GroupIdColumn': {
+                                        'Value': 'GroupId1',
+                                        'IsExplicit': true
+                                    },
+                                    'WeightColumn': null,
+                                    'LabelColumn': 'Label1',
+                                    'TrainingData': '$Var_8f51ed90f5b642b2a80eeb628d67a5b3',
+                                    'FeatureColumn': 'Features',
+                                    'NormalizeFeatures': 'Auto',
+                                    'Caching': 'Auto'
+                                },
+                                'Outputs': {
+                                    'PredictorModel': '$Var_53eb1dedb8234950affa64daaa770427'
+                                }
+                            }, {
+                                'Name': 'Transforms.ManyHeterogeneousModelCombiner',
+                                'Inputs': {
+                                    'TransformModels': [
+                                        '$Var_2039a1ba743549c1989de460c105b354',
+                                        '$Var_5d04d6405abb40ed9efb0486c2e1688b'
+                                    ],
+                                    'PredictorModel': '$Var_53eb1dedb8234950affa64daaa770427'
+                                },
+                                'Outputs': {
+                                    'PredictorModel': '$Var_dd7bc37a393741aea36b46ed609c72a1'
+                                }
+                            }
+                        ],
+                        'Inputs': {
+                            'Data': '$Var_48d35aae527f439398805f51e5f0cfab'
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_dd7bc37a393741aea36b46ed609c72a1'
+                        },
+                        'StratificationColumn': null,
+                        'NumFolds': 2,
+                        'Kind': 'SignatureRankerTrainer',
+                        'LabelColumn': 'Label1',
+                        'WeightColumn': null,
+                        'GroupColumn': {
+                            'Value': 'GroupId1',
+                            'IsExplicit': true
+                        },
+                        'NameColumn': {
+                            'Value': 'Workclass',
+                            'IsExplicit': true
+                        }
+                    },
+                    'Outputs': {
+                        'PredictorModel': '$Var_48c4f33d44c1437bb792a8640703e21e',
+                        'Warnings': '$Var_8f3381cecb1b48dda606a58d153dc022',
+                        'OverallMetrics': '$overallMetrics',
+                        'PerInstanceMetrics': '$perInstanceMetric',
+                        'ConfusionMatrix': '$Var_a06599dcbf52480a8dbb5f7414ee08fe'
+                    }
+                }
+            ]
+            }";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+
+            var data = runner.GetOutput<IDataView>("overallMetrics");
+
+            var schema = data.Schema;
+            var metricCol = schema.GetColumnOrNull("NDCG");
+            Assert.True(metricCol.HasValue);
+            var foldCol = schema.GetColumnOrNull("Fold Index");
+            Assert.True(foldCol.HasValue);
+            bool b;
+            using (var cursor = data.GetRowCursor(metricCol.Value, foldCol.Value))
+            {
+                var getter = cursor.GetGetter<VBuffer<double>>(metricCol.Value.Index);
+                var foldGetter = cursor.GetGetter<ReadOnlyMemory<char>>(foldCol.Value.Index);
+                ReadOnlyMemory<char> fold = default;
+
+                // Get the verage.
+                b = cursor.MoveNext();
+                Assert.True(b);
+                var avg = default(VBuffer<double>);
+                getter(ref avg);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Average", fold));
+
+                // Get the standard deviation.
+                b = cursor.MoveNext();
+                Assert.True(b);
+                var stdev = default(VBuffer<double>);
+                getter(ref stdev);
+                foldGetter(ref fold);
+                Assert.True(ReadOnlyMemoryUtils.EqualsStr("Standard Deviation", fold));
+                var stdevValues = stdev.GetValues();
+                Assert.Equal(2.462, stdevValues[0], 3);
+                Assert.Equal(2.763, stdevValues[1], 3);
+                Assert.Equal(3.273, stdevValues[2], 3);
+
+                var sumBldr = new BufferBuilder<double>(R8Adder.Instance);
+                sumBldr.Reset(avg.Length, true);
+                var val = default(VBuffer<double>);
+                for (int f = 0; f < 2; f++)
+                {
+                    b = cursor.MoveNext();
+                    Assert.True(b);
+                    getter(ref val);
+                    foldGetter(ref fold);
+                    sumBldr.AddFeatures(0, in val);
+                    Assert.True(ReadOnlyMemoryUtils.EqualsStr("Fold " + f, fold));
+                }
+                var sum = default(VBuffer<double>);
+                sumBldr.GetResult(ref sum);
+
+                var avgValues = avg.GetValues();
+                var sumValues = sum.GetValues();
+                for (int i = 0; i < avgValues.Length; i++)
+                    Assert.Equal(avgValues[i], sumValues[i] / 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+
+            data = runner.GetOutput<IDataView>("perInstanceMetric");
+            var nameCol = data.Schema.GetColumnOrNull("Instance");
+            Assert.True(nameCol.HasValue);
+            using (var cursor = data.GetRowCursor(nameCol.Value))
+            {
+                var getter = cursor.GetGetter<ReadOnlyMemory<char>>(nameCol.Value.Index);
+                while (cursor.MoveNext())
+                {
+                    ReadOnlyMemory<char> name = default;
+                    getter(ref name);
+                    Assert.Subset(new HashSet<string>() { "Private", "?", "Federal-gov" }, new HashSet<string>() { name.ToString() });
+                    if (cursor.Position > 4)
+                        break;
+                }
+            }
+        }
+
+        [Fact]
+        public void TestOvaMacro()
+        {
+            var dataPath = GetDataPath(@"iris.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': [{
+                                        'Name': 'Label',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 0,
+                                                'Max': 0,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Features',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 1,
+                                                'Max': 4,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }
+                                ],
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_672f860e44304ba8bd1c1a6e4b5ba9c5'
+                        }
+                    }, {
+                        'Name': 'Models.OneVersusAll',
+                        'Inputs': {
+                            'Nodes': [{
+                                    'Name': 'Trainers.StochasticDualCoordinateAscentBinaryClassifier',
+                                    'Inputs': {
+                                        'LossFunction': {
+                                            'Name': 'LogLoss',
+                                            'Settings': {}
+                                        },
+                                        'PositiveInstanceWeight': 1.0,
+                                        'Calibrator': {
+                                            'Name': 'PlattCalibrator',
+                                            'Settings': {}
+                                        },
+                                        'MaxCalibrationExamples': 1000000,
+                                        'L2Const': null,
+                                        'L1Threshold': null,
+                                        'NumThreads': 1,
+                                        'ConvergenceTolerance': 0.1,
+                                        'MaxIterations': null,
+                                        'Shuffle': true,
+                                        'CheckFrequency': null,
+                                        'BiasLearningRate': 0.0,
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_9aa1732198964d7f979a0bbec5db66c2',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_6219b70478204e599cef4ab3672656ff'
+                                    }
+                                }
+                            ],
+                            'OutputForSubGraph': {
+                                'Model': '$Var_a229f40df6494a93a794ffd5480d5549'
+                            },
+                            'UseProbabilities': true,
+                            'WeightColumn': null,
+                            'LabelColumn': 'Label',
+                            'TrainingData': '$Var_672f860e44304ba8bd1c1a6e4b5ba9c5',
+                            'FeatureColumn': 'Features',
+                            'NormalizeFeatures': 'Auto',
+                            'Caching': 'Auto'
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_a8423859a7994667b7f1075f8b7b0194'
+                        }
+                    }, {
+                        'Name': 'Transforms.DatasetScorer',
+                        'Inputs': {
+                            'Data': '$Var_672f860e44304ba8bd1c1a6e4b5ba9c5',
+                            'PredictorModel': '$Var_a8423859a7994667b7f1075f8b7b0194',
+                            'Suffix': null
+                        },
+                        'Outputs': {
+                            'ScoredData': '$Var_5454fd8c353c40288dd8c2d104be788f',
+                            'ScoringTransform': '$Var_df35ea0b6e814ed5a1d8f9d673a663b1'
+                        }
+                    }, {
+                        'Name': 'Models.ClassificationEvaluator',
+                        'Inputs': {
+                            'OutputTopKAcc': null,
+                            'NumTopClassesToOutput': 3,
+                            'NumClassesConfusionMatrix': 10,
+                            'OutputPerClassStatistics': false,
+                            'LabelColumn': null,
+                            'WeightColumn': null,
+                            'ScoreColumn': null,
+                            'StratColumn': null,
+                            'Data': '$Var_5454fd8c353c40288dd8c2d104be788f',
+                            'NameColumn': 'Name'
+                        },
+                        'Outputs': {
+                            'ConfusionMatrix': '$Var_ed441dd1ebcc46f7bf7e096d18b33fd7',
+                            'Warnings': '$Var_bec6f9da6bd647808c4a7a05b7e8b1be',
+                            'OverallMetrics': '$overallMetrics',
+                            'PerInstanceMetrics': '$Var_cfcc191521dd45c58ed6654ced067a28'
+                        }
+                    }
+                ]
+            }
+            ";
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+
+            var data = runner.GetOutput<IDataView>("overallMetrics");
+            var schema = data.Schema;
+            var accCol = schema.GetColumnOrNull(MultiClassClassifierEvaluator.AccuracyMacro);
+            Assert.True(accCol.HasValue);
+            bool b;
+            using (var cursor = data.GetRowCursor(accCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(accCol.Value.Index);
+                b = cursor.MoveNext();
+                Assert.True(b);
+                double acc = 0;
+                getter(ref acc);
+                Assert.Equal(0.96, acc, 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [Fact]
+        public void TestOvaMacroWithUncalibratedLearner()
+        {
+            var dataPath = GetDataPath(@"iris.txt");
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': [{
+                                        'Name': 'Label',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 0,
+                                                'Max': 0,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Features',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 1,
+                                                'Max': 4,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }
+                                ],
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_f38b99289df746319edd57a3ccfb85a2'
+                        }
+                    }, {
+                        'Name': 'Models.OneVersusAll',
+                        'Inputs': {
+                            'Nodes': [{
+                                    'Name': 'Trainers.AveragedPerceptronBinaryClassifier',
+                                    'Inputs': {
+                                        'LossFunction': {
+                                            'Name': 'HingeLoss',
+                                            'Settings': {
+                                                'Margin': 1.0
+                                            }
+                                        },
+                                        'Calibrator': {
+                                            'Name': 'PlattCalibrator',
+                                            'Settings': {}
+                                        },
+                                        'MaxCalibrationExamples': 1000000,
+                                        'LearningRate': 1.0,
+                                        'DecreaseLearningRate': false,
+                                        'ResetWeightsAfterXExamples': null,
+                                        'DoLazyUpdates': true,
+                                        'L2RegularizerWeight': 0.0,
+                                        'RecencyGain': 0.0,
+                                        'RecencyGainMulti': false,
+                                        'Averaged': true,
+                                        'AveragedTolerance': 0.01,
+                                        'NumIterations': 1,
+                                        'InitialWeights': null,
+                                        'InitWtsDiameter': 0.0,
+                                        'Shuffle': false,
+                                        'StreamingCacheSize': 1000000,
+                                        'LabelColumn': 'Label',
+                                        'TrainingData': '$Var_9ccc8bce4f6540eb8a244ab40585602a',
+                                        'FeatureColumn': 'Features',
+                                        'NormalizeFeatures': 'Auto',
+                                        'Caching': 'Auto'
+                                    },
+                                    'Outputs': {
+                                        'PredictorModel': '$Var_4f1c140c153e4b5fb03fbe3ffb97a68b'
+                                    }
+                                }
+                            ],
+                            'OutputForSubGraph': {
+                                'Model': '$Var_b47f7facc1c540e39d8b82ab64df6592'
+                            },
+                            'UseProbabilities': true,
+                            'WeightColumn': null,
+                            'LabelColumn': 'Label',
+                            'TrainingData': '$Var_f38b99289df746319edd57a3ccfb85a2',
+                            'FeatureColumn': 'Features',
+                            'NormalizeFeatures': 'Auto',
+                            'Caching': 'Auto'
+                        },
+                        'Outputs': {
+                            'PredictorModel': '$Var_d67eb393a0e849c2962961c174eab3da'
+                        }
+                    }, {
+                        'Name': 'Transforms.DatasetScorer',
+                        'Inputs': {
+                            'Data': '$Var_f38b99289df746319edd57a3ccfb85a2',
+                            'PredictorModel': '$Var_d67eb393a0e849c2962961c174eab3da',
+                            'Suffix': null
+                        },
+                        'Outputs': {
+                            'ScoredData': '$Var_a20e37dc58d84bf5a1cb13ed13eae5ba',
+                            'ScoringTransform': '$Var_49f9a4a57ff043cda5947704678241a0'
+                        }
+                    }, {
+                        'Name': 'Models.ClassificationEvaluator',
+                        'Inputs': {
+                            'OutputTopKAcc': null,
+                            'NumTopClassesToOutput': 3,
+                            'NumClassesConfusionMatrix': 10,
+                            'OutputPerClassStatistics': false,
+                            'LabelColumn': null,
+                            'WeightColumn': null,
+                            'ScoreColumn': null,
+                            'StratColumn': null,
+                            'Data': '$Var_a20e37dc58d84bf5a1cb13ed13eae5ba',
+                            'NameColumn': 'Name'
+                        },
+                        'Outputs': {
+                            'ConfusionMatrix': '$Var_7db29303b67942e2a6267c20b9c4be77',
+                            'Warnings': '$Var_7751126378244c2385940cdf5a0e76e6',
+                            'OverallMetrics': '$overallMetrics',
+                            'PerInstanceMetrics': '$Var_67109dcdce504a0894a5c2f5616d21f9'
+                        }
+                    }
+                ]
+            }
+            ";
+
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+
+            var data = runner.GetOutput<IDataView>("overallMetrics");
+            var schema = data.Schema;
+            var accCol = schema.GetColumnOrNull(MultiClassClassifierEvaluator.AccuracyMacro);
+            Assert.True(accCol.HasValue);
+            bool b;
+            using (var cursor = data.GetRowCursor(accCol.Value))
+            {
+                var getter = cursor.GetGetter<double>(accCol.Value.Index);
+                b = cursor.MoveNext();
+                Assert.True(b);
+                double acc = 0;
+                getter(ref acc);
+                Assert.Equal(0.71, acc, 2);
+                b = cursor.MoveNext();
+                Assert.False(b);
+            }
+        }
+
+        [ConditionalFact(typeof(Environment), nameof(Environment.Is64BitProcess))] // TensorFlow is 64-bit only
+        public void TestTensorFlowEntryPoint()
+        {
+            var dataPath = GetDataPath("Train-Tiny-28x28.txt");
+            Env.ComponentCatalog.RegisterAssembly(typeof(TensorFlowTransformer).Assembly);
+            string inputGraph = @"
+            {
+                'Nodes':
+                [{
+                        'Name': 'Data.TextLoader',
+                        'Inputs': {
+                            'InputFile': '$inputFile',
+                            'Arguments': {
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [
+                                    '\t'
+                                ],
+                                'Column': [{
+                                        'Name': 'Label',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 0,
+                                                'Max': 0,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }, {
+                                        'Name': 'Placeholder',
+                                        'Type': null,
+                                        'Source': [{
+                                                'Min': 1,
+                                                'Max': 784,
+                                                'AutoEnd': false,
+                                                'VariableEnd': false,
+                                                'AllOther': false,
+                                                'ForceVector': false
+                                            }
+                                        ],
+                                        'KeyCount': null
+                                    }
+                                ],
+                                'TrimWhitespace': false,
+                                'HasHeader': false
+                            }
+                        },
+                        'Outputs': {
+                            'Data': '$Var_2802f3e485814063828c2303ec60327c'
+                        }
+                    }, {
+                        'Name': 'Transforms.TensorFlowScorer',
+                        'Inputs': {
+                            'ModelLocation': 'mnist_model/frozen_saved_model.pb',
+                            'InputColumns': [
+                                'Placeholder'
+                            ],
+                            'OutputColumns': [
+                                'Softmax'
+                            ],
+                            'LabelColumn': null,
+                            'TensorFlowLabel': null,
+                            'OptimizationOperation': null,
+                            'LossOperation': null,
+                            'MetricOperation': null,
+                            'BatchSize': 64,
+                            'Epoch': 5,
+                            'LearningRateOperation': null,
+                            'LearningRate': 0.01,
+                            'SaveLocationOperation': 'save/Const',
+                            'SaveOperation': 'save/control_dependency',
+                            'ReTrain': false,
+                            'Data': '$Var_2802f3e485814063828c2303ec60327c'
+                        },
+                        'Outputs': {
+                            'OutputData': '$outputData',
+                            'Model': '$Var_c3a191a107c54725acc49e432bfdf104'
+                        }
+                    }
+                ]
+            }
+            ";
+            JObject graph = JObject.Parse(inputGraph);
+            var runner = new GraphRunner(Env, graph[FieldNames.Nodes] as JArray);
+            var inputFile = new SimpleFileHandle(Env, dataPath, false, false);
+            runner.SetInput("inputFile", inputFile);
+            runner.RunAll();
+
+            var data = runner.GetOutput<IDataView>("outputData");
+
+            var schema = data.Schema;
+            Assert.Equal(3, schema.Count);
+            Assert.Equal("Softmax", schema[2].Name);
+            Assert.Equal(10, (schema[2].Type as VectorType)?.Size);
+        }
+
+        [Fact]
+        public void LoadEntryPointModel()
+        {
+            var ml = new MLContext();
+            for (int i = 0; i < 5; i++)
+            {
+                var modelPath = GetDataPath($"backcompat/ep_model{i}.zip");
+                ITransformer loadedModel;
+                using (var stream = File.OpenRead(modelPath))
+                {
+                    loadedModel = ml.Model.Load(stream);
+                }
+
+            }
         }
     }
 }

@@ -5,15 +5,17 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.DataPipe;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Transforms;
 
 [assembly: LoadableClass(OptionalColumnTransform.Summary, typeof(OptionalColumnTransform),
     typeof(OptionalColumnTransform.Arguments), typeof(SignatureDataTransform),
@@ -24,15 +26,16 @@ using Microsoft.ML.Runtime.Model;
 
 [assembly: EntryPointModule(typeof(OptionalColumnTransform))]
 
-namespace Microsoft.ML.Runtime.DataPipe
+namespace Microsoft.ML.Transforms
 {
     /// <include file='doc.xml' path='doc/members/member[@name="OptionalColumnTransform"]/*' />
-    public class OptionalColumnTransform : RowToRowMapperTransformBase
+    [BestFriend]
+    internal sealed class OptionalColumnTransform : RowToRowMapperTransformBase
     {
         public sealed class Arguments : TransformInputBase
         {
-            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s)", ShortName = "col", SortOrder = 1)]
-            public string[] Column;
+            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s)", Name = "Column", ShortName = "col", SortOrder = 1)]
+            public string[] Columns;
         }
 
         private sealed class Bindings : ColumnBindingsBase
@@ -49,7 +52,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             private readonly int[] _srcColsWithOptionalColumn;
 
             private Bindings(OptionalColumnTransform parent, ColumnType[] columnTypes, int[] srcCols,
-                int[] srcColsWithOptionalColumn, ISchema input, ISchema inputWithOptionalColumn, bool user, string[] names)
+                int[] srcColsWithOptionalColumn, Schema input, Schema inputWithOptionalColumn, bool user, string[] names)
                 : base(input, user, names)
             {
                 Contracts.AssertValue(parent);
@@ -60,30 +63,30 @@ namespace Microsoft.ML.Runtime.DataPipe
                 SrcCols = srcCols;
                 _parent = parent;
                 _metadata = new MetadataDispatcher(InfoCount);
-                _inputWithOptionalColumn = Schema.Create(inputWithOptionalColumn);
+                _inputWithOptionalColumn = inputWithOptionalColumn;
                 _srcColsWithOptionalColumn = srcColsWithOptionalColumn;
                 SetMetadata();
             }
 
-            public static Bindings Create(Arguments args, ISchema input, OptionalColumnTransform parent)
+            public static Bindings Create(Arguments args, Schema input, OptionalColumnTransform parent)
             {
-                var names = new string[args.Column.Length];
-                var columnTypes = new ColumnType[args.Column.Length];
-                var srcCols = new int[args.Column.Length];
-                for (int i = 0; i < args.Column.Length; i++)
+                var names = new string[args.Columns.Length];
+                var columnTypes = new ColumnType[args.Columns.Length];
+                var srcCols = new int[args.Columns.Length];
+                for (int i = 0; i < args.Columns.Length; i++)
                 {
-                    names[i] = args.Column[i];
+                    names[i] = args.Columns[i];
                     int col;
                     bool success = input.TryGetColumnIndex(names[i], out col);
-                    Contracts.CheckUserArg(success, nameof(args.Column));
-                    columnTypes[i] = input.GetColumnType(col);
+                    Contracts.CheckUserArg(success, nameof(args.Columns));
+                    columnTypes[i] = input[col].Type;
                     srcCols[i] = col;
                 }
 
                 return new Bindings(parent, columnTypes, srcCols, srcCols, input, input, true, names);
             }
 
-            public static Bindings Create(IHostEnvironment env, ModelLoadContext ctx, ISchema input, OptionalColumnTransform parent)
+            public static Bindings Create(IHostEnvironment env, ModelLoadContext ctx, Schema input, OptionalColumnTransform parent)
             {
                 Contracts.AssertValue(ctx);
                 Contracts.AssertValue(input);
@@ -200,7 +203,7 @@ namespace Microsoft.ML.Runtime.DataPipe
                 Contracts.AssertValue(predicate);
 
                 var active = GetActiveInput(predicate);
-                Contracts.Assert(active.Length == Input.ColumnCount);
+                Contracts.Assert(active.Length == Input.Count);
 
                 foreach (int srcCol in SrcCols)
                 {
@@ -235,13 +238,13 @@ namespace Microsoft.ML.Runtime.DataPipe
         private const string RegistrationName = "OptionalColumn";
 
         /// <summary>
-        /// Convenience constructor for public facing API.
+        /// Initializes a new instance of <see cref="OptionalColumnTransform"/>.
         /// </summary>
         /// <param name="env">Host Environment.</param>
         /// <param name="input">Input <see cref="IDataView"/>. This is the output from previous transform or loader.</param>
         /// <param name="columns">Columns to transform.</param>
         public OptionalColumnTransform(IHostEnvironment env, IDataView input, params string[] columns)
-            : this(env, new Arguments() { Column = columns }, input)
+            : this(env, new Arguments() { Columns = columns }, input)
         {
         }
 
@@ -252,7 +255,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             : base(env, RegistrationName, input)
         {
             Host.CheckValue(args, nameof(args));
-            Host.CheckUserArg(Utils.Size(args.Column) > 0, nameof(args.Column));
+            Host.CheckUserArg(Utils.Size(args.Columns) > 0, nameof(args.Columns));
 
             _bindings = Bindings.Create(args, Source.Schema, this);
         }
@@ -277,7 +280,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             return h.Apply("Loading Model", ch => new OptionalColumnTransform(h, ctx, input));
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -288,7 +291,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             _bindings.Save(Host, ctx);
         }
 
-        public override Schema Schema => _bindings.AsSchema;
+        public override Schema OutputSchema => _bindings.AsSchema;
 
         protected override bool? ShouldUseParallelCursors(Func<int, bool> predicate)
         {
@@ -296,46 +299,48 @@ namespace Microsoft.ML.Runtime.DataPipe
             return null;
         }
 
-        protected override IRowCursor GetRowCursorCore(Func<int, bool> predicate, IRandom rand = null)
+        protected override RowCursor GetRowCursorCore(IEnumerable<Schema.Column> columnsNeeded, Random rand = null)
         {
-            Host.AssertValue(predicate, "predicate");
             Host.AssertValueOrNull(rand);
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, OutputSchema);
 
             var inputPred = _bindings.GetDependencies(predicate);
             var active = _bindings.GetActive(predicate);
-            var input = Source.GetRowCursor(inputPred);
-            return new RowCursor(Host, _bindings, input, active);
+
+            var inputCols = Source.Schema.Where(x => inputPred(x.Index));
+            var input = Source.GetRowCursor(inputCols);
+            return new Cursor(Host, _bindings, input, active);
         }
 
-        public override IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator,
-            Func<int, bool> predicate, int n, IRandom rand = null)
+        public override RowCursor[] GetRowCursorSet(IEnumerable<Schema.Column> columnsNeeded, int n, Random rand = null)
         {
-            Host.CheckValue(predicate, nameof(predicate));
             Host.CheckValueOrNull(rand);
 
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, OutputSchema);
             var inputPred = _bindings.GetDependencies(predicate);
+            var inputCols = Source.Schema.Where(x => inputPred(x.Index));
+
             var active = _bindings.GetActive(predicate);
-            IRowCursor input;
+            RowCursor input;
 
             if (n > 1 && ShouldUseParallelCursors(predicate) != false)
             {
-                var inputs = Source.GetRowCursorSet(out consolidator, inputPred, n);
+                var inputs = Source.GetRowCursorSet(inputCols, n);
                 Host.AssertNonEmpty(inputs);
 
                 if (inputs.Length != 1)
                 {
-                    var cursors = new IRowCursor[inputs.Length];
+                    var cursors = new RowCursor[inputs.Length];
                     for (int i = 0; i < inputs.Length; i++)
-                        cursors[i] = new RowCursor(Host, _bindings, inputs[i], active);
+                        cursors[i] = new Cursor(Host, _bindings, inputs[i], active);
                     return cursors;
                 }
                 input = inputs[0];
             }
             else
-                input = Source.GetRowCursor(inputPred);
+                input = Source.GetRowCursor(inputCols);
 
-            consolidator = null;
-            return new IRowCursor[] { new RowCursor(Host, _bindings, input, active) };
+            return new RowCursor[] { new Cursor(Host, _bindings, input, active) };
         }
 
         protected override Func<int, bool> GetDependenciesCore(Func<int, bool> predicate)
@@ -348,7 +353,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             return _bindings.MapColumnIndex(out isSrc, col);
         }
 
-        protected override Delegate[] CreateGetters(IRow input, Func<int, bool> active, out Action disposer)
+        protected override Delegate[] CreateGetters(Row input, Func<int, bool> active, out Action disposer)
         {
             Func<int, bool> activeInfos =
                 iinfo =>
@@ -369,8 +374,8 @@ namespace Microsoft.ML.Runtime.DataPipe
                         getters[iinfo] = MakeGetter(iinfo);
                     else
                     {
-                        Func<IRow, int, ValueGetter<int>> srcDel = GetSrcGetter<int>;
-                        var meth = srcDel.GetMethodInfo().GetGenericMethodDefinition().MakeGenericMethod(_bindings.ColumnTypes[iinfo].ItemType.RawType);
+                        Func<Row, int, ValueGetter<int>> srcDel = GetSrcGetter<int>;
+                        var meth = srcDel.GetMethodInfo().GetGenericMethodDefinition().MakeGenericMethod(_bindings.ColumnTypes[iinfo].GetItemType().RawType);
                         getters[iinfo] = (Delegate)meth.Invoke(this, new object[] { input, iinfo });
                     }
                 }
@@ -378,7 +383,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             }
         }
 
-        private ValueGetter<T> GetSrcGetter<T>(IRow input, int iinfo)
+        private ValueGetter<T> GetSrcGetter<T>(Row input, int iinfo)
         {
             return input.GetGetter<T>(_bindings.SrcCols[iinfo]);
         }
@@ -386,8 +391,8 @@ namespace Microsoft.ML.Runtime.DataPipe
         private Delegate MakeGetter(int iinfo)
         {
             var columnType = _bindings.ColumnTypes[iinfo];
-            if (columnType.IsVector)
-                return Utils.MarshalInvoke(MakeGetterVec<int>, columnType.ItemType.RawType, columnType.VectorSize);
+            if (columnType is VectorType vectorType)
+                return Utils.MarshalInvoke(MakeGetterVec<int>, vectorType.ItemType.RawType, vectorType.Size);
             return Utils.MarshalInvoke(MakeGetterOne<int>, columnType.RawType);
         }
 
@@ -398,16 +403,17 @@ namespace Microsoft.ML.Runtime.DataPipe
 
         private Delegate MakeGetterVec<T>(int length)
         {
-            return (ValueGetter<VBuffer<T>>)((ref VBuffer<T> value) => value = new VBuffer<T>(length, 0, value.Values, value.Indices));
+            return (ValueGetter<VBuffer<T>>)((ref VBuffer<T> value) =>
+                VBufferUtils.Resize(ref value, length, 0));
         }
 
-        private sealed class RowCursor : SynchronizedCursorBase<IRowCursor>, IRowCursor
+        private sealed class Cursor : SynchronizedCursorBase
         {
             private readonly Bindings _bindings;
             private readonly bool[] _active;
             private readonly Delegate[] _getters;
 
-            public RowCursor(IChannelProvider provider, Bindings bindings, IRowCursor input, bool[] active)
+            public Cursor(IChannelProvider provider, Bindings bindings, RowCursor input, bool[] active)
                 : base(provider, input)
             {
                 Ch.CheckValue(bindings, nameof(bindings));
@@ -425,15 +431,15 @@ namespace Microsoft.ML.Runtime.DataPipe
                 }
             }
 
-            public Schema Schema => _bindings.AsSchema;
+            public override Schema Schema => _bindings.AsSchema;
 
-            public bool IsColumnActive(int col)
+            public override bool IsColumnActive(int col)
             {
                 Ch.Check(0 <= col && col < _bindings.ColumnCount);
                 return _active == null || _active[col];
             }
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            public override ValueGetter<TValue> GetGetter<TValue>(int col)
             {
                 Ch.Check(IsColumnActive(col));
 
@@ -455,8 +461,8 @@ namespace Microsoft.ML.Runtime.DataPipe
             private Delegate MakeGetter(int iinfo)
             {
                 var columnType = _bindings.ColumnTypes[iinfo];
-                if (columnType.IsVector)
-                    return Utils.MarshalInvoke(MakeGetterVec<int>, columnType.ItemType.RawType, columnType.VectorSize);
+                if (columnType is VectorType vectorType)
+                    return Utils.MarshalInvoke(MakeGetterVec<int>, vectorType.ItemType.RawType, vectorType.Size);
                 return Utils.MarshalInvoke(MakeGetterOne<int>, columnType.RawType);
             }
 
@@ -467,16 +473,15 @@ namespace Microsoft.ML.Runtime.DataPipe
 
             private Delegate MakeGetterVec<T>(int length)
             {
-                return (ValueGetter<VBuffer<T>>)((ref VBuffer<T> value) => value = new VBuffer<T>(length, 0, value.Values, value.Indices));
+                return (ValueGetter<VBuffer<T>>)((ref VBuffer<T> value) =>
+                    VBufferUtils.Resize(ref value, length, 0));
             }
         }
 
         [TlcModule.EntryPoint(Desc = Summary,
             Name = "Transforms.OptionalColumnCreator",
             UserName = UserName,
-            ShortName = ShortName,
-            XmlInclude = new[] { @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/member[@name=""OptionalColumnTransform""]/*' />",
-                                 @"<include file='../Microsoft.ML.Transforms/doc.xml' path='doc/members/example[@name=""OptionalColumnTransform""]/*' />"})]
+            ShortName = ShortName)]
 
         public static CommonOutputs.TransformOutput MakeOptional(IHostEnvironment env, Arguments input)
         {
@@ -484,7 +489,7 @@ namespace Microsoft.ML.Runtime.DataPipe
             var xf = new OptionalColumnTransform(h, input, input.Data);
             return new CommonOutputs.TransformOutput()
             {
-                Model = new TransformModel(h, xf, input.Data),
+                Model = new TransformModelImpl(h, xf, input.Data),
                 OutputData = xf
             };
         }

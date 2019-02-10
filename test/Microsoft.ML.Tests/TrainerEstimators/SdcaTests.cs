@@ -2,12 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
+using Microsoft.ML.StaticPipe;
+using Microsoft.ML.Trainers;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.ML.Tests.TrainerEstimators
 {
@@ -18,16 +15,20 @@ namespace Microsoft.ML.Tests.TrainerEstimators
         {
             var dataPath = GetDataPath("breast-cancer.txt");
 
-            var data = TextLoader.CreateReader(Env, ctx => (Label: ctx.LoadFloat(0), Features: ctx.LoadFloat(1, 10)))
-                .Read(dataPath);
-            IEstimator<ITransformer> est = new LinearClassificationTrainer(Env, "Features", "Label", advancedSettings: (s) => s.ConvergenceTolerance = 1e-2f);
-            TestEstimatorCore(est, data.AsDynamic);
+            var data = TextLoaderStatic.CreateReader(Env, ctx => (Label: ctx.LoadFloat(0), Features: ctx.LoadFloat(1, 10)))
+                .Read(dataPath).Cache();
 
-            est = new SdcaRegressionTrainer(Env, "Features", "Label", advancedSettings: (s) => s.ConvergenceTolerance = 1e-2f);
-            TestEstimatorCore(est, data.AsDynamic);
+            var binaryTrainer = ML.BinaryClassification.Trainers.StochasticDualCoordinateAscent(
+                new SdcaBinaryTrainer.Options { ConvergenceTolerance = 1e-2f });
+            TestEstimatorCore(binaryTrainer, data.AsDynamic);
 
-            est = new SdcaMultiClassTrainer(Env, "Features", "Label", advancedSettings: (s) => s.ConvergenceTolerance = 1e-2f);
-            TestEstimatorCore(est, data.AsDynamic);
+            var regressionTrainer = ML.Regression.Trainers.StochasticDualCoordinateAscent(
+                new SdcaRegressionTrainer.Options { ConvergenceTolerance = 1e-2f });
+            TestEstimatorCore(regressionTrainer, data.AsDynamic);
+
+            var mcTrainer = ML.MulticlassClassification.Trainers.StochasticDualCoordinateAscent(
+                new SdcaMultiClassTrainer.Options { ConvergenceTolerance = 1e-2f });
+            TestEstimatorCore(mcTrainer, data.AsDynamic);
 
             Done();
         }

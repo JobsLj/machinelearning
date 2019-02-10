@@ -4,7 +4,11 @@ This project contains performance benchmarks.
 
 ## Run the Performance Tests
 
-**Pre-requisite:** On a clean repo, `build.cmd` at the root installs the right version of dotnet.exe and builds the solution. You need to build the solution in `Release` with native dependencies. 
+**Pre-requisite:** In order to fetch dependencies which come through Git submodules the following command needs to be run before building:
+
+    git submodule update --init
+
+**Pre-requisite:** On a clean repo with initalized submodules, `build.cmd` at the root installs the right version of dotnet.exe and builds the solution. You need to build the solution in `Release` with native dependencies. 
 
     build.cmd -release -buildNative
     
@@ -80,3 +84,24 @@ public class NonTrainingBenchmark
 [Config(typeof(TrainConfig))]
 public class TrainingBenchmark
 ```
+## Running the `BenchmarksProjectIsNotBroken`  test
+
+If your build is failing in the build machines, in the release configuraiton due to the `BenchmarksProjectIsNotBroken` test failing, 
+you can debug this test locally by:
+
+1- Building the solution in the release mode locally
+
+build.cmd -release -buildNative
+
+2- Changing the configuration in Visual Studio from Debug -> Release
+3- Changing the annotation in the `BenchmarksProjectIsNotBroken` to replace `ConditionalTheory` with `Theory`, as below. 
+
+```cs
+[Theory]
+[MemberData(nameof(GetBenchmarks))]
+public void BenchmarksProjectIsNotBroken(Type type)
+
+```
+
+4- Restart Visual Studio
+5- Proceed to running the tests normally from the Test Explorer view. 

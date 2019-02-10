@@ -6,21 +6,21 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Text;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.Data.DataView;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Calibration;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Transforms.Normalizers;
 
 [assembly: LoadableClass(TrainCommand.Summary, typeof(TrainCommand), typeof(TrainCommand.Arguments), typeof(SignatureCommand),
     "Train Predictor", "Train")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using ColumnRole = RoleMappedSchema.ColumnRole;
 
@@ -32,7 +32,8 @@ namespace Microsoft.ML.Runtime.Data
         Yes
     }
 
-    public sealed class TrainCommand : DataCommand.ImplBase<TrainCommand.Arguments>
+    [BestFriend]
+    internal sealed class TrainCommand : DataCommand.ImplBase<TrainCommand.Arguments>
     {
         public sealed class Arguments : DataCommand.ArgumentsBase
         {
@@ -53,8 +54,9 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Name column name", ShortName = "name", SortOrder = 6)]
             public string NameColumn = DefaultColumnNames.Name;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
-            public KeyValuePair<string, string>[] CustomColumn;
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'",
+                Name = "CustomColumn", ShortName = "col", SortOrder = 10)]
+            public KeyValuePair<string, string>[] CustomColumns;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Normalize option for the feature column", ShortName = "norm")]
             public NormalizeOption NormalizeFeatures = NormalizeOption.Auto;
@@ -64,6 +66,9 @@ namespace Microsoft.ML.Runtime.Data
 
             [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "The validation data file", ShortName = "valid")]
             public string ValidationFile;
+
+            [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "The test data file", ShortName = "test")]
+            public string TestFile;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Whether we should cache input training data", ShortName = "cache")]
             public bool? CacheData;
@@ -142,7 +147,7 @@ namespace Microsoft.ML.Runtime.Data
             ch.Trace("Constructing data pipeline");
             IDataView view = CreateLoader();
 
-            ISchema schema = view.Schema;
+            var schema = view.Schema;
             var label = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.LabelColumn), _labelColumn, DefaultColumnNames.Label);
             var feature = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.FeatureColumn), _featureColumn, DefaultColumnNames.Features);
             var group = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.GroupColumn), _groupColumn, DefaultColumnNames.GroupId);
@@ -153,7 +158,7 @@ namespace Microsoft.ML.Runtime.Data
 
             ch.Trace("Binding columns");
 
-            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumn);
+            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumns);
             var data = new RoleMappedData(view, label, feature, group, weight, name, customCols);
 
             // REVIEW: Unify the code that creates validation examples in Train, TrainTest and CV commands.
@@ -173,15 +178,34 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
+            // In addition to the training set, some trainers can accept two extra data sets, validation set and test set,
+            // in training phase. The major difference between validation set and test set is that training process may
+            // indirectly use validation set to improve the model but the learned model should totally independent of test set.
+            // Similar to validation set, the trainer can report the scores computed using test set.
+            RoleMappedData testDataUsedInTrainer = null;
+            if (!string.IsNullOrWhiteSpace(Args.TestFile))
+            {
+                // In contrast to the if-else block for validation above, we do not throw a warning if test file is provided
+                // because this is TrainTest command.
+                if (trainer.Info.SupportsTest)
+                {
+                    ch.Trace("Constructing the test pipeline");
+                    IDataView testPipeUsedInTrainer = CreateRawLoader(dataFile: Args.TestFile);
+                    testPipeUsedInTrainer = ApplyTransformUtils.ApplyAllTransformsToData(Host, view, testPipeUsedInTrainer);
+                    testDataUsedInTrainer = new RoleMappedData(testPipeUsedInTrainer, data.Schema.GetColumnRoleNames());
+                }
+            }
+
             var predictor = TrainUtils.Train(Host, ch, data, trainer, validData,
-                Args.Calibrator, Args.MaxCalibrationExamples, Args.CacheData, inputPredictor);
+                Args.Calibrator, Args.MaxCalibrationExamples, Args.CacheData, inputPredictor, testDataUsedInTrainer);
 
             using (var file = Host.CreateOutputFile(Args.OutputModelFile))
                 TrainUtils.SaveModel(Host, ch, file, predictor, data, cmd);
         }
     }
 
-    public static class TrainUtils
+    [BestFriend]
+    internal static class TrainUtils
     {
         public static void CheckTrainer(IExceptionContext ectx, IComponentFactory<ITrainer> trainer, string dataFile)
         {
@@ -198,7 +222,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Else, if the user name equals the default name return null.
         /// Else, throw an error.
         /// </summary>
-        public static string MatchNameOrDefaultOrNull(IExceptionContext ectx, ISchema schema, string argName, string userName, string defaultName)
+        public static string MatchNameOrDefaultOrNull(IExceptionContext ectx, Schema schema, string argName, string userName, string defaultName)
         {
             Contracts.CheckValueOrNull(ectx);
             ectx.CheckValue(schema, nameof(schema));
@@ -225,13 +249,13 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         public static IPredictor Train(IHostEnvironment env, IChannel ch, RoleMappedData data, ITrainer trainer, RoleMappedData validData,
-            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null)
+            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null, RoleMappedData testData = null)
         {
-            return TrainCore(env, ch, data, trainer, validData, calibrator, maxCalibrationExamples, cacheData, inputPredictor);
+            return TrainCore(env, ch, data, trainer, validData, calibrator, maxCalibrationExamples, cacheData, inputPredictor, testData);
         }
 
         private static IPredictor TrainCore(IHostEnvironment env, IChannel ch, RoleMappedData data, ITrainer trainer, RoleMappedData validData,
-            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null)
+            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null, RoleMappedData testData = null)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ch, nameof(ch));
@@ -252,7 +276,7 @@ namespace Microsoft.ML.Runtime.Data
                 inputPredictor = null;
             }
             ch.Assert(validData == null || trainer.Info.SupportsValidation);
-            var predictor = trainer.Train(new TrainContext(data, validData, inputPredictor));
+            var predictor = trainer.Train(new TrainContext(data, validData, testData, inputPredictor));
             var caliTrainer = calibrator?.CreateComponent(env);
             return CalibratorUtils.TrainCalibratorIfNeeded(env, ch, caliTrainer, maxCalibrationExamples, trainer, predictor, data);
         }
@@ -439,7 +463,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 if (autoNorm != NormalizeOption.Yes)
                 {
-                    if (!trainer.Info.NeedNormalization || schema.IsNormalized(featCol))
+                    if (!trainer.Info.NeedNormalization || schema[featCol].IsNormalized())
                     {
                         ch.Info("Not adding a normalizer.");
                         return false;
@@ -493,9 +517,9 @@ namespace Microsoft.ML.Runtime.Data
                 return Enumerable.Empty<KeyValuePair<ColumnRole, string>>();
             foreach (var kindName in customColumnArg)
             {
-                ectx.CheckUserArg(!string.IsNullOrWhiteSpace(kindName.Value), nameof(TrainCommand.Arguments.CustomColumn), "Names for columns with custom kind must not be empty");
+                ectx.CheckUserArg(!string.IsNullOrWhiteSpace(kindName.Value), nameof(TrainCommand.Arguments.CustomColumns), "Names for columns with custom kind must not be empty");
                 if (string.IsNullOrWhiteSpace(kindName.Key))
-                    throw ectx.ExceptUserArg(nameof(TrainCommand.Arguments.CustomColumn), "Custom column with name '{0}' needs a kind. Use col[<Kind>]={0}", kindName.Value);
+                    throw ectx.ExceptUserArg(nameof(TrainCommand.Arguments.CustomColumns), "Custom column with name '{0}' needs a kind. Use col[<Kind>]={0}", kindName.Value);
             }
             return customColumnArg.Select(kindName => new ColumnRole(kindName.Key).Bind(kindName.Value));
         }

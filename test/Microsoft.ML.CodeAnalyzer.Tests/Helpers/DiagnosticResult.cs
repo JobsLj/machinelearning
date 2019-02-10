@@ -2,15 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.CodeAnalysis;
 using System;
+using Microsoft.CodeAnalysis;
 
 namespace Microsoft.ML.CodeAnalyzer.Tests.Helpers
 {
     /// <summary>
     /// Location where the diagnostic appears, as determined by path, line number, and column number.
     /// </summary>
-    public struct DiagnosticResultLocation
+    public readonly struct DiagnosticResultLocation
     {
         public string Path { get; }
         public int Line { get; }
